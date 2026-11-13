@@ -36,9 +36,10 @@ for them in `%USERPROFILE%\android-toolchain` (override with `FOLIO_TOOLCHAIN`).
 .\build.ps1 -Install        # build and install on the connected device
 ```
 
-`debug.keystore` is created on the first build and is not committed. Keep it: Android only accepts
-an update signed with the same key, otherwise the app has to be uninstalled first (which deletes
-the library).
+The signing key is created on the first build as `folio-debug.keystore` beside the toolchain
+(override with `FOLIO_KEYSTORE`), outside the repo so every checkout signs with the same key. Keep
+it: Android only accepts an update signed with the same key, otherwise the app has to be
+uninstalled first, which deletes the library.
 
 `python tools/make_sample.py build/sample-book.pdf` writes a novel-shaped test PDF (needs reportlab).
 

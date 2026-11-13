@@ -38,6 +38,26 @@ final class Themes {
         return new ColorMatrixColorFilter(m);
     }
 
+    /**
+     * The theme filter with the result pulled most of the way to one flat colour: the back of a
+     * turning page, where the print only shows through faintly. One pass instead of a bitmap
+     * plus a translucent wash, which matters on a slow GPU.
+     */
+    static ColorMatrixColorFilter washed(int t, float warmth, int toward, float amount) {
+        int bg = BG[t], fg = FG[t];
+        float[] m = new float[20];
+        row(m, 0, Color.red(fg), Color.red(bg), 1f);
+        row(m, 1, Color.green(fg), Color.green(bg), warmG(warmth));
+        row(m, 2, Color.blue(fg), Color.blue(bg), warmB(warmth));
+        int[] target = {Color.red(toward), Color.green(toward), Color.blue(toward)};
+        for (int r = 0; r < 3; r++) {
+            m[r * 5 + r] *= 1f - amount;
+            m[r * 5 + 4] = m[r * 5 + 4] * (1f - amount) + target[r] * amount;
+        }
+        m[18] = 1f;
+        return new ColorMatrixColorFilter(m);
+    }
+
     private static void row(float[] m, int r, int lo, int hi, float w) {
         m[r * 5 + r] = (hi - lo) / 255f * w;
         m[r * 5 + 4] = lo * w;

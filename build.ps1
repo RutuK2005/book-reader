@@ -40,8 +40,10 @@ Push-Location $out
 try { Step "aapt add" { & "$bt\aapt.exe" add unaligned.apk classes.dex | Out-Null } } finally { Pop-Location }
 Step "zipalign" { & "$bt\zipalign.exe" -f -p 4 "$out\unaligned.apk" "$out\aligned.apk" }
 
-# The signing key identifies the app to Android: keep it, or updates will need an uninstall first.
-$ks = "$root\debug.keystore"
+# The signing key identifies the app to Android: keep it, or updates will need an uninstall first
+# (which deletes the library). It lives beside the toolchain, outside the repo, so every checkout
+# and worktree signs with the same key.
+$ks = if ($env:FOLIO_KEYSTORE) { $env:FOLIO_KEYSTORE } else { "$tc\folio-debug.keystore" }
 if (-not (Test-Path $ks)) {
     Step "keytool" {
         & "$jdk\bin\keytool.exe" -genkeypair -keystore $ks -storepass android -keypass android -alias folio `

@@ -4,11 +4,12 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.graphics.Typeface;
-import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.BatteryManager;
@@ -41,10 +42,11 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
 
     static final String EXTRA_ID = "id";
 
-    private static final int PANEL = 0xF21B1B1D, TEXT = 0xFFECECEC, DIM = 0xFFA0A0A0, ACCENT = 0xFFE8A33D;
+    private static final int PANEL = 0xFF1E1E20, TEXT = 0xFFECECEC, DIM = 0xFFA0A0A0, ACCENT = 0xFFE8A33D;
     private static final int MATCH = ViewGroup.LayoutParams.MATCH_PARENT, WRAP = ViewGroup.LayoutParams.WRAP_CONTENT;
     /** The screen is held on while reading, but only this long after the last touch or page turn. */
     private static final long AWAKE_MS = 10 * 60 * 1000L;
+    private static final long SAVE_DELAY_MS = 2000L;
 
     private Library lib;
     private Library.Book book;
@@ -63,7 +65,27 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     private long lastTurnAt;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final Runnable letScreenSleep = () -> getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    private boolean awake, unsaved;
+    private final Runnable letScreenSleep = () -> {
+        awake = false;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    };
+    /**
+     * Your place is written once you have settled on a page, so a crash or a dead battery loses
+     * nothing. It waits for a quiet moment: never during a page turn, where it could cost a frame.
+     */
+    private final Runnable saveProgress = new Runnable() {
+        @Override
+        public void run() {
+            if (!unsaved) return;
+            if (view.isTurning()) {
+                handler.postDelayed(this, SAVE_DELAY_MS);
+                return;
+            }
+            unsaved = false;
+            new Thread(() -> lib.save()).start();
+        }
+    };
     private final BroadcastReceiver minuteTick = new BroadcastReceiver() {
         @Override
         public void onReceive(Context c, Intent i) {
@@ -187,12 +209,27 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         super.onPause();
         unregisterReceiver(minuteTick);
         handler.removeCallbacks(letScreenSleep);
+        handler.removeCallbacks(saveProgress);
+        awake = false;
+        unsaved = false;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (ready) {
             book.page = view.getPage();
             book.opened = System.currentTimeMillis();
             lib.save();
         }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        view.restorePages();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        view.releasePages();
     }
 
     @Override
@@ -217,7 +254,11 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     }
 
     private void keepAwake() {
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // Setting a window flag forces a window re-layout, so only do it when it is not already set.
+        if (!awake) {
+            awake = true;
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
         handler.removeCallbacks(letScreenSleep);
         handler.postDelayed(letScreenSleep, AWAKE_MS);
     }
@@ -278,7 +319,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         if (dir == 1) {
             // Only plausible reading times feed the estimate: not skimming, not a coffee break.
             float sec = (now - lastTurnAt) / 1000f;
-            if (sec >= 4f && sec <= 600f) {
+            if (sec >= 8f && sec <= 600f) {
                 float per = sec / view.pagesOnScreen();
                 book.secPerPage = book.samples == 0 ? per : book.secPerPage * 0.85f + per * 0.15f;
                 book.samples++;
@@ -286,6 +327,9 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         }
         lastTurnAt = now;
         book.page = page;
+        unsaved = true;
+        handler.removeCallbacks(saveProgress);
+        handler.postDelayed(saveProgress, SAVE_DELAY_MS);
         keepAwake();
         if (menuVisible) refreshMenu();
     }
@@ -298,6 +342,11 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     @Override
     public void onUserActivity() {
         keepAwake();
+        if (unsaved) {
+            // Still flipping: push the save back until the reader has stopped touching the screen.
+            handler.removeCallbacks(saveProgress);
+            handler.postDelayed(saveProgress, SAVE_DELAY_MS);
+        }
     }
 
     // ---------------------------------------------------------------- settings
@@ -306,7 +355,9 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         int t = prefs.getInt(P.THEME, 1);
         float warmth = prefs.getFloat(P.WARMTH, 0f);
         view.applyTheme(t, warmth);
-        getWindow().setBackgroundDrawable(new ColorDrawable(Themes.tint(Themes.BG[t], warmth)));
+        // The reader view paints every pixel itself; a window background would only be drawn
+        // underneath it on every frame.
+        getWindow().setBackgroundDrawable(null);
         for (int i = 0; i < swatches.length; i++) styleSwatch(swatches[i], i, i == t);
     }
 
@@ -369,6 +420,8 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
 
     private void buildMenu() {
         Context mc = new ContextThemeWrapper(this, android.R.style.Theme_Material);
+        // Sized to the longest row label at the user's font scale, so labels never wrap.
+        final int labelW = (int) Math.ceil(label(mc, "", 14, DIM).getPaint().measureText("Brightness")) + d(16);
 
         LinearLayout top = new LinearLayout(mc);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -401,7 +454,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         pageLabel = label(mc, "", 14, TEXT);
         pageLabel.setGravity(Gravity.CENTER);
         bot.addView(pageLabel, new LinearLayout.LayoutParams(MATCH, WRAP));
-        pageSeek = new SeekBar(mc);
+        pageSeek = seek(mc);
         pageSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
@@ -441,7 +494,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         bot.addView(themes, rowParams(12));
 
         LinearLayout turn = row(mc);
-        turn.addView(label(mc, "Page turn", 14, DIM), new LinearLayout.LayoutParams(d(96), WRAP));
+        turn.addView(label(mc, "Page turn", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
         String[] names = {"Curl", "Slide", "None"};
         for (int i = 0; i < 3; i++) {
             final int mode = i;
@@ -462,12 +515,13 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         bot.addView(turn, rowParams(14));
 
         LinearLayout bright = row(mc);
-        bright.addView(label(mc, "Brightness", 14, DIM), new LinearLayout.LayoutParams(d(96), WRAP));
-        brightSeek = new SeekBar(mc);
+        bright.addView(label(mc, "Brightness", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
+        brightSeek = seek(mc);
         brightSeek.setMax(100);
         float saved = prefs.getFloat(P.BRIGHT, -1f);
         brightSeek.setProgress(saved < 0f ? 50 : Math.round(saved * 100));
         brightSeek.setEnabled(saved >= 0f);
+        brightSeek.setAlpha(saved >= 0f ? 1f : 0.35f);
         final CheckBox auto = check(mc, "System", saved < 0f);
         brightSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -488,6 +542,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         auto.setOnCheckedChangeListener((v, on) -> {
             prefs.edit().putFloat(P.BRIGHT, on ? -1f : brightSeek.getProgress() / 100f).apply();
             brightSeek.setEnabled(!on);
+            brightSeek.setAlpha(on ? 0.35f : 1f);
             applyBrightness();
         });
         bright.addView(brightSeek, new LinearLayout.LayoutParams(0, WRAP, 1f));
@@ -495,8 +550,8 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         bot.addView(bright, rowParams(10));
 
         LinearLayout warm = row(mc);
-        warm.addView(label(mc, "Warmth", 14, DIM), new LinearLayout.LayoutParams(d(96), WRAP));
-        SeekBar warmSeek = new SeekBar(mc);
+        warm.addView(label(mc, "Warmth", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
+        SeekBar warmSeek = seek(mc);
         warmSeek.setMax(100);
         warmSeek.setProgress(Math.round(prefs.getFloat(P.WARMTH, 0f) * 100));
         warmSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -590,14 +645,14 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         Collections.sort(pages);
         String[] items = new String[pages.size()];
         for (int i = 0; i < items.length; i++) items[i] = "Page " + (pages.get(i) + 1);
-        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        present(new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Bookmarks")
                 .setItems(items, (dlg, which) -> {
                     view.goToPage(pages.get(which));
                     showMenu(false);
                 })
                 .setNegativeButton("Close", null)
-                .show();
+                .create(), null);
     }
 
     private void goToDialog() {
@@ -605,10 +660,11 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         final EditText input = new EditText(new ContextThemeWrapper(this, android.R.style.Theme_Material_Dialog_Alert));
         input.setInputType(InputType.TYPE_CLASS_NUMBER);
         input.setHint("1 – " + book.pages);
+        input.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
         FrameLayout wrap = new FrameLayout(this);
         wrap.setPadding(d(22), d(8), d(22), 0);
         wrap.addView(input);
-        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        present(new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Go to page")
                 .setView(wrap)
                 .setPositiveButton("Go", (dlg, which) -> {
@@ -620,7 +676,19 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
                     }
                 })
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create(), input);
+    }
+
+    /** Shows a dialog in the app's colours; with a text field, the keyboard comes up with it. */
+    private void present(AlertDialog dialog, View field) {
+        if (field != null && dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        }
+        dialog.show();
+        for (int which : new int[]{DialogInterface.BUTTON_POSITIVE, DialogInterface.BUTTON_NEGATIVE}) {
+            if (dialog.getButton(which) != null) dialog.getButton(which).setTextColor(ACCENT);
+        }
+        if (field != null) field.requestFocus();
     }
 
     // ---------------------------------------------------------------- small view helpers
@@ -640,8 +708,16 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         return t;
     }
 
+    private SeekBar seek(Context c) {
+        SeekBar s = new SeekBar(c);
+        s.setProgressTintList(ColorStateList.valueOf(ACCENT));
+        s.setThumbTintList(ColorStateList.valueOf(ACCENT));
+        return s;
+    }
+
     private CheckBox check(Context c, String text, boolean on) {
         CheckBox cb = new CheckBox(c);
+        cb.setButtonTintList(ColorStateList.valueOf(ACCENT));
         cb.setText(text);
         cb.setTextColor(TEXT);
         cb.setTextSize(14);

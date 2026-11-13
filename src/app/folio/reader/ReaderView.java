@@ -5,8 +5,10 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Shader;
@@ -61,6 +63,8 @@ final class ReaderView extends View implements PdfEngine.Callback {
     private int pageCount, cur, curPage, gen;
     private boolean cropOn, dualPref;
     private final SparseArray<Bitmap> cache = new SparseArray<>();
+    /** One shader per cached page, so a page can be drawn as a polygon fill during a turn. */
+    private final SparseArray<BitmapShader> shaders = new SparseArray<>();
     private final HashSet<Integer> pending = new HashSet<>();
     private final SparseArray<String[]> footers = new SparseArray<>();
 
@@ -73,11 +77,18 @@ final class ReaderView extends View implements PdfEngine.Callback {
     private final int slop, footerH, pad;
     private final Paint pagePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint bgPaint = new Paint();
+    /** Page image as a polygon fill. No anti-aliasing: adjacent polygons must meet without a seam. */
+    private final Paint fillPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Paint flapPaint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG);
     private final Paint flapTint = new Paint();
     private final Paint foldShadow = new Paint();
     private final Paint edgeShadowH = new Paint();
     private final Paint edgeShadowV = new Paint();
-    private final Paint flapShade = new Paint();
+    private final Paint flapShade = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Shader edgeGradH, edgeGradV, flapGrad;
+    private final Matrix shaderMatrix = new Matrix();
+    private final float[] quad = new float[8], poly = new float[16];
+    private final Path pathA = new Path(), pathB = new Path();
     private final Paint footer = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ribbon = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path ribbonPath = new Path();
@@ -122,11 +133,16 @@ final class ReaderView extends View implements PdfEngine.Callback {
         ribbon.setColor(0xFFC0392B);
         // Unit-length gradients; each is stretched with canvas.scale() when drawn.
         foldShadow.setShader(new LinearGradient(0, 0, -1, 0, 0x66000000, 0x00000000, Shader.TileMode.CLAMP));
-        edgeShadowH.setShader(new LinearGradient(0, 0, 1, 0, 0x48000000, 0x00000000, Shader.TileMode.CLAMP));
-        edgeShadowV.setShader(new LinearGradient(0, 0, 0, 1, 0x48000000, 0x00000000, Shader.TileMode.CLAMP));
-        flapShade.setShader(new LinearGradient(0, 0, 1, 0,
-                new int[]{0x5A000000, 0x14000000, 0x00000000, 0x26000000},
-                new float[]{0f, 0.28f, 0.72f, 1f}, Shader.TileMode.CLAMP));
+        edgeGradH = new LinearGradient(0, 0, 1, 0, 0x48000000, 0x00000000, Shader.TileMode.CLAMP);
+        edgeGradV = new LinearGradient(0, 0, 0, 1, 0x48000000, 0x00000000, Shader.TileMode.CLAMP);
+        edgeShadowH.setShader(edgeGradH);
+        edgeShadowV.setShader(edgeGradV);
+        // Across the flap, crease to free edge: dark in the fold, a highlight where the sheet
+        // bulges toward the reader, then falling off again.
+        flapGrad = new LinearGradient(0, 0, 1, 0,
+                new int[]{0x4D000000, 0x0C000000, 0x30FFFFFF, 0x00FFFFFF, 0x20000000},
+                new float[]{0f, 0.20f, 0.46f, 0.78f, 1f}, Shader.TileMode.CLAMP);
+        flapShade.setShader(flapGrad);
 
         taps = new GestureDetector(c, new TapListener());
         taps.setIsLongpressEnabled(false);
@@ -153,14 +169,43 @@ final class ReaderView extends View implements PdfEngine.Callback {
         if (engine != null) engine.cb = null;
         engine = null;
         layout = null;
+        cache.clear();
+        shaders.clear();
+        zoomBmp = null;
+    }
+
+    /**
+     * Gives back every rendered page while the reader is not on screen (another app in front, or
+     * the screen off). Three screen-sized images are too much to sit on in a 2 GB tablet.
+     */
+    void releasePages() {
+        if (engine == null || layout == null) return;
+        cancelTurn();
+        resetZoom();
+        gen++;
+        engine.gen = gen;
+        cache.clear();
+        shaders.clear();
+        pending.clear();
+        engine.trim();
+    }
+
+    /** Re-renders after releasePages(); a page takes well under a tenth of a second. */
+    void restorePages() {
+        if (engine == null || layout == null || cache.size() > 0) return;
+        requestWindow();
+        invalidate();
     }
 
     void applyTheme(int theme, float warmth) {
         bg = Themes.tint(Themes.BG[theme], warmth);
         fg = Themes.tint(Themes.FG[theme], warmth);
         pagePaint.setColorFilter(Themes.filter(theme, warmth));
+        fillPaint.setColorFilter(pagePaint.getColorFilter());
         bgPaint.setColor(bg);
-        flapTint.setColor((Themes.blend(bg, fg, 0.10f) & 0x00FFFFFF) | 0xE2000000);
+        int flap = Themes.blend(bg, fg, 0.10f);
+        flapPaint.setColorFilter(Themes.washed(theme, warmth, flap, 0.88f));
+        flapTint.setColor(flap);
         footer.setColor((fg & 0x00FFFFFF) | 0x99000000);
         invalidate();
     }
@@ -188,6 +233,11 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
     int getPage() {
         return curPage;
+    }
+
+    /** True while a page is being dragged or is animating. */
+    boolean isTurning() {
+        return tState != IDLE;
     }
 
     int pagesOnScreen() {
@@ -256,6 +306,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
         engine.gen = gen;
         for (int i = 0; i < cache.size(); i++) engine.recycle(cache.valueAt(i));
         cache.clear();
+        shaders.clear();
         pending.clear();
         footers.clear();
         boolean dual = dualPref && getWidth() > getHeight() && pageCount > 1;
@@ -283,6 +334,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
         for (int i = cache.size() - 1; i >= 0; i--) {
             if (Math.abs(cache.keyAt(i) - cur) > 1) {
                 engine.recycle(cache.valueAt(i));
+                shaders.remove(cache.keyAt(i));
                 cache.removeAt(i);
             }
         }
@@ -315,7 +367,11 @@ final class ReaderView extends View implements PdfEngine.Callback {
         }
         engine.recycle(cache.get(screen));
         cache.put(screen, bmp);
-        invalidate();
+        shaders.put(screen, new BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+        // Upload the texture now, while idle, instead of on the first frame of the next page turn.
+        bmp.prepareToDraw();
+        // A neighbour arriving while a page sits still changes nothing on screen: no redraw.
+        if (screen == cur || tState != IDLE) invalidate();
     }
 
     @Override
@@ -337,8 +393,11 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
     @Override
     protected void onDraw(Canvas c) {
-        c.drawColor(bg);
-        if (layout == null) return;
+        // Every path below paints the whole view, so there is no background fill to pay for.
+        if (layout == null) {
+            c.drawColor(bg);
+            return;
+        }
         if (tState != IDLE) {
             int top = tDir > 0 ? cur : cur - 1, bottom = tDir > 0 ? cur + 1 : cur;
             if (animMode == ANIM_SLIDE) drawSlide(c, top, bottom);
@@ -379,7 +438,11 @@ final class ReaderView extends View implements PdfEngine.Callback {
     private void drawSlide(Canvas c, int top, int bottom) {
         float w = getWidth(), h = getHeight();
         float edge = (w + tx) / 2f;
+        // Only the strip the sliding page has uncovered needs the page underneath.
+        c.save();
+        c.clipRect(edge - 1f, 0, w, h);
         drawPage(c, bottom);
+        c.restore();
         c.save();
         c.translate(edge, 0);
         c.scale(18 * dp, 1f);
@@ -391,6 +454,12 @@ final class ReaderView extends View implements PdfEngine.Callback {
         c.restore();
     }
 
+    /**
+     * Draws a turn in progress. Each region is filled as an exact polygon textured with the page
+     * image rather than as a whole-screen image cut down by a rotated clip: with a rotated clip
+     * the GPU still shades every pixel of every layer and throws most of them away, which this
+     * tablet's GPU cannot do at 60 frames a second.
+     */
     private void drawCurl(Canvas c, int top, int bottom) {
         final float w = getWidth(), h = getHeight();
         final float dx = tx - w, dy = ty - cy;
@@ -400,12 +469,19 @@ final class ReaderView extends View implements PdfEngine.Callback {
             return;
         }
         // Crease-local frame: origin at the midpoint of C-T, +x pointing from the corner to T.
+        final float nx = dx / d, ny = dy / d;
         final float mx = (w + tx) / 2f, my = (cy + ty) / 2f;
         final float ang = (float) Math.toDegrees(Math.atan2(dy, dx));
         final float big = (w + h) * 2f;
-        final Bitmap sheet = cache.get(top);
 
-        drawPage(c, bottom);
+        setQuad(quad, 0, 0, w, 0, w, h, 0, h);
+
+        // The page underneath shows on the lifted corner's side of the crease. It is grown two
+        // pixels past the crease so nothing can show through the seam; the sheet covers the excess.
+        if (toPath(pathA, poly, clipToCrease(quad, 4, mx, my, nx, ny, -1f, 2f, poly))) {
+            fillPage(c, pathA, bottom);
+            drawOverlays(c, bottom, mx, my, ang, false);
+        }
 
         // Shadow the lifted sheet casts on the page underneath, along the crease.
         c.save();
@@ -415,53 +491,141 @@ final class ReaderView extends View implements PdfEngine.Callback {
         c.drawRect(-1f, -big, 0f, big, foldShadow);
         c.restore();
 
-        c.save();
         // The part of the sheet still lying flat is the far side of the crease.
-        c.translate(mx, my);
-        c.rotate(ang);
-        c.clipRect(0f, -big, big, big);
-        c.rotate(-ang);
-        c.translate(-mx, -my);
-        drawPage(c, top);
+        if (toPath(pathA, poly, clipToCrease(quad, 4, mx, my, nx, ny, 1f, 0f, poly))) {
+            fillPage(c, pathA, top);
+            drawOverlays(c, top, mx, my, ang, true);
+        }
 
-        // Mirror across the crease: from here on, page coordinates land on the folded-over flap.
+        // The lifted part of the page, in page coordinates. Drawn through a mirror across the
+        // crease it becomes the folded-over flap.
+        if (!toPath(pathA, poly, clipToCrease(quad, 4, mx, my, nx, ny, -1f, 0f, poly))) return;
+        c.save();
         c.translate(mx, my);
         c.rotate(ang);
         c.scale(-1f, 1f);
         c.rotate(-ang);
         c.translate(-mx, -my);
 
-        // Soft shadow just outside the flap's free edges.
+        // Soft shadows just outside the flap's free edges, each cut off where the crease crosses
+        // it. They stop at the corner: overlapping past it would leave a dark square.
         float es = clamp(d * 0.10f, 4 * dp, 28 * dp);
-        c.save();
-        c.translate(w, 0);
-        c.scale(es, 1f);
-        c.drawRect(0f, -big, 1f, big, edgeShadowH);
-        c.restore();
+        setQuad(quad, w, 0, w + es, 0, w + es, h, w, h);
+        if (toPath(pathB, poly, clipToCrease(quad, 4, mx, my, nx, ny, -1f, 0f, poly))) {
+            shaderMatrix.setScale(es, 1f);
+            shaderMatrix.postTranslate(w, 0f);
+            fillGradient(c, pathB, edgeShadowH, edgeGradH);
+        }
         if (!straight) {
-            c.save();
             if (cy > h / 2f) {
-                c.translate(0, h);
-                c.scale(1f, es);
+                setQuad(quad, 0, h, w, h, w, h + es, 0, h + es);
+                shaderMatrix.setScale(1f, es);
+                shaderMatrix.postTranslate(0f, h);
             } else {
-                c.scale(1f, -es);
+                setQuad(quad, 0, -es, w, -es, w, 0, 0, 0);
+                shaderMatrix.setScale(1f, -es);
             }
-            c.drawRect(-big, 0f, big, 1f, edgeShadowV);
-            c.restore();
+            if (toPath(pathB, poly, clipToCrease(quad, 4, mx, my, nx, ny, -1f, 0f, poly))) {
+                fillGradient(c, pathB, edgeShadowV, edgeGradV);
+            }
         }
 
         // The back of the sheet: the page's own content mirrored, washed out to paper colour.
-        c.clipRect(0f, 0f, w, h);
-        if (sheet != null) c.drawBitmap(sheet, 0, 0, pagePaint);
-        c.drawRect(0f, 0f, w, h, flapTint);
+        BitmapShader sheet = shaders.get(top);
+        if (sheet != null) {
+            flapPaint.setShader(sheet);
+            c.drawPath(pathA, flapPaint);
+        } else {
+            c.drawPath(pathA, flapTint);
+        }
 
-        // Undo the mirror to get back to the crease frame, then shade the flap like a curve.
+        // Shade across the flap, crease to free edge, so it reads as a curve.
+        shaderMatrix.setScale(-Math.max(1f, d / 2f), 1f);
+        shaderMatrix.postRotate(ang);
+        shaderMatrix.postTranslate(mx, my);
+        fillGradient(c, pathA, flapShade, flapGrad);
+        c.restore();
+    }
+
+    private void fillPage(Canvas c, Path path, int screen) {
+        BitmapShader s = shaders.get(screen);
+        if (s != null) {
+            fillPaint.setShader(s);
+            c.drawPath(path, fillPaint);
+        } else {
+            c.drawPath(path, bgPaint);
+        }
+    }
+
+    /** Fills a path with a unit gradient placed by shaderMatrix. */
+    private void fillGradient(Canvas c, Path path, Paint paint, Shader gradient) {
+        gradient.setLocalMatrix(shaderMatrix);
+        paint.setShader(gradient);
+        c.drawPath(path, paint);
+    }
+
+    /** Footer and bookmark ribbon for one side of the crease. These are small, so a clip is cheap. */
+    private void drawOverlays(Canvas c, int screen, float mx, float my, float ang, boolean farSide) {
+        float big = (getWidth() + getHeight()) * 2f;
+        c.save();
         c.translate(mx, my);
         c.rotate(ang);
-        c.scale(-1f, 1f);
-        c.scale(Math.max(1f, d / 2f), 1f);
-        c.drawRect(0f, -big, 1f, big, flapShade);
+        if (farSide) c.clipRect(0f, -big, big, big);
+        else c.clipRect(-big, -big, 0f, big);
+        c.rotate(-ang);
+        c.translate(-mx, -my);
+        if (bookmarked(screen)) c.drawPath(ribbonPath, ribbon);
+        drawFooter(c, screen);
         c.restore();
+    }
+
+    private static void setQuad(float[] q, float x0, float y0, float x1, float y1,
+                                float x2, float y2, float x3, float y3) {
+        q[0] = x0;
+        q[1] = y0;
+        q[2] = x1;
+        q[3] = y1;
+        q[4] = x2;
+        q[5] = y2;
+        q[6] = x3;
+        q[7] = y3;
+    }
+
+    /**
+     * Cuts a convex polygon along the crease, keeping the side where (p - m)·n has the sign of
+     * `side`, grown outward by `grow` pixels. Returns the number of vertices written to `out`.
+     */
+    private static int clipToCrease(float[] in, int n, float mx, float my, float nx, float ny,
+                                    float side, float grow, float[] out) {
+        int k = 0;
+        float px = in[2 * (n - 1)], py = in[2 * (n - 1) + 1];
+        float pd = side * ((px - mx) * nx + (py - my) * ny) + grow;
+        for (int i = 0; i < n; i++) {
+            float qx = in[2 * i], qy = in[2 * i + 1];
+            float qd = side * ((qx - mx) * nx + (qy - my) * ny) + grow;
+            if ((pd >= 0f) != (qd >= 0f)) {
+                float t = pd / (pd - qd);
+                out[k++] = px + (qx - px) * t;
+                out[k++] = py + (qy - py) * t;
+            }
+            if (qd >= 0f) {
+                out[k++] = qx;
+                out[k++] = qy;
+            }
+            px = qx;
+            py = qy;
+            pd = qd;
+        }
+        return k / 2;
+    }
+
+    private static boolean toPath(Path path, float[] pts, int n) {
+        path.rewind();
+        if (n < 3) return false;
+        path.moveTo(pts[0], pts[1]);
+        for (int i = 1; i < n; i++) path.lineTo(pts[2 * i], pts[2 * i + 1]);
+        path.close();
+        return true;
     }
 
     private void drawFooter(Canvas c, int screen) {
@@ -490,7 +654,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
     }
 
     private String timeLeft(int lastPage) {
-        if (book == null || book.samples < 4) return null;
+        if (book == null || book.samples < 5) return null;
         int remaining = pageCount - 1 - lastPage;
         if (remaining <= 0) return null;
         int min = Math.round(remaining * book.secPerPage / 60f);

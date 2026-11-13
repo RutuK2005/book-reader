@@ -197,10 +197,18 @@ final class PdfEngine {
         });
     }
 
+    /** Drops the spare bitmaps. */
+    void trim() {
+        synchronized (pool) {
+            pool.clear();
+        }
+    }
+
     void recycle(Bitmap b) {
         if (b == null) return;
         synchronized (pool) {
-            if (!closed && pool.size() < 3) pool.add(b);
+            // Two spares cover a page turn (one evicted, one incoming); more is just held RAM.
+            if (!closed && pool.size() < 2) pool.add(b);
         }
     }
 
@@ -211,7 +219,10 @@ final class PdfEngine {
                 if (b.getWidth() == w && b.getHeight() == h) return b;
             }
         }
-        return Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        // Pages are solid paper; telling the GPU so lets it draw them without blending.
+        b.setHasAlpha(false);
+        return b;
     }
 
     private void render(Layout l, int screen, Bitmap bmp, float zoom, float panX, float panY) {
