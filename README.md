@@ -1,7 +1,16 @@
-# Folio
+# Book Reader
 
-A small, fast PDF book reader for Android, built for a 2 GB Galaxy Tab A (SM-T510, Android 11).
-Pure Java on the platform's own `PdfRenderer`: no third-party libraries, an APK of about 50 KB.
+I wanted to read my PDF books on an old Galaxy Tab A the way you read on a Kindle, and nothing
+on Android felt right, so I made this. It shows up on the tablet as **Folio**.
+
+It is plain Java on Android's built-in `PdfRenderer`, with no libraries, so the APK is about 50 KB
+and it runs fine on a tablet with 2 GB of RAM.
+
+## Install
+
+Download `Folio.apk` from the [Releases](../../releases) page, open it on your Android device and
+allow installing from that source when asked. Needs Android 8 or newer. Then tap **Add books** and
+pick your PDFs.
 
 ## Features
 
