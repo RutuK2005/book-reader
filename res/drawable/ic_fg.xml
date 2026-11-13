@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- open book: left page, right page, bookmark ribbon -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,41 C47,35 36,34 28,37 L28,71 C36,68 47,69 54,75 Z" />
+    <path
+        android:fillColor="#EADFC8"
+        android:pathData="M54,41 C61,35 72,34 80,37 L80,71 C72,68 61,69 54,75 Z" />
+    <path
+        android:fillColor="#E8A33D"
+        android:pathData="M66,35.5 L72,34.6 L72,50 L69,47 L66,50 Z" />
+</vector>
