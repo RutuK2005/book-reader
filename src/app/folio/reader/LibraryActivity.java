@@ -519,10 +519,14 @@ public class LibraryActivity extends Activity {
     private View cell(final Library.Book b) {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
+        // Each cover keeps its own proportions and stands on the bottom of an equal-height slot,
+        // so a row lines up along its base like books on a shelf and nothing is cropped away.
         CoverView cover = coverView(b);
-        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(MATCH, WRAP);
-        clp.setMargins(d(2), d(2), d(2), d(8));
-        c.addView(cover, clp);
+        CoverSlot slot = new CoverSlot(this);
+        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM);
+        clp.setMargins(d(2), 0, d(2), d(8));
+        slot.addView(cover, clp);
+        c.addView(slot, new LinearLayout.LayoutParams(MATCH, WRAP));
         int pct = percent(b);
         ProgressLine line = new ProgressLine(this);
         line.set(b.started() ? pct / 100f : 0f, fg);
@@ -945,10 +949,34 @@ public class LibraryActivity extends Activity {
             setClipToOutline(true);
         }
 
+        /** Height over width. Follows the picture, within the range real books come in. */
+        private float aspect = 1.45f;
+
+        @Override
+        public void setImageBitmap(Bitmap b) {
+            super.setImageBitmap(b);
+            if (b != null && b.getWidth() > 0) aspect = Math.max(1.15f, Math.min(1.46f, b.getHeight() / (float) b.getWidth()));
+        }
+
         @Override
         protected void onMeasure(int wSpec, int hSpec) {
             int w = MeasureSpec.getSize(wSpec);
-            setMeasuredDimension(w, Math.round(w * 1.45f));
+            setMeasuredDimension(w, Math.round(w * aspect));
+        }
+    }
+
+    /** A fixed-height place for one cover, tall enough for the tallest book. */
+    private static final class CoverSlot extends FrameLayout {
+        CoverSlot(Context c) {
+            super(c);
+            setClipChildren(false);
+            setClipToPadding(false);
+        }
+
+        @Override
+        protected void onMeasure(int wSpec, int hSpec) {
+            int w = MeasureSpec.getSize(wSpec);
+            super.onMeasure(wSpec, MeasureSpec.makeMeasureSpec(Math.round(w * 1.5f), MeasureSpec.EXACTLY));
         }
     }
 
