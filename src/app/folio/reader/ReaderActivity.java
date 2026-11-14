@@ -152,6 +152,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         applyTheme();
         applyBrightness();
         immersive();
+        applyRotationLock();
         view.rulerOn = prefs.getBoolean(P.RULER, false);
         view.rulerBand = prefs.getFloat(P.RULER_H, 96f);
         applySaver();
@@ -233,11 +234,33 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         lastTurnAt = SystemClock.elapsedRealtime();
         updateStatus();
         keepAwake();
-        if (!prefs.getBoolean(P.HINT, false)) {
-            prefs.edit().putBoolean(P.HINT, true).apply();
-            Toast.makeText(this, "Tap or swipe the edges to turn pages  ·  tap the middle for settings",
-                    Toast.LENGTH_LONG).show();
+        if (!prefs.getBoolean("guide_shown", false)) {
+            prefs.edit().putBoolean("guide_shown", true).apply();
+            showGuide();
         }
+    }
+
+    /** Shown once: a map of where to tap, laid over the page. Any tap dismisses it. */
+    private void showGuide() {
+        final LinearLayout guide = new LinearLayout(this);
+        guide.setBackgroundColor(0xD9000000);
+        String[] parts = {"‹\n\nTap or swipe\nfor the\nprevious page",
+                "Tap the middle\nfor settings\n\n\nHold an edge to flip quickly\n\nPinch or double-tap to zoom\n\n\nTap anywhere to start reading",
+                "›\n\nTap or swipe\nfor the\nnext page"};
+        float[] weights = {0.28f, 0.44f, 0.28f};
+        for (int i = 0; i < 3; i++) {
+            TextView t = label(this, parts[i], i == 1 ? 16 : 15, 0xFFF2F2F2);
+            t.setGravity(Gravity.CENTER);
+            t.setLineSpacing(0, 1.2f);
+            if (i != 1) {
+                GradientDrawable zone = new GradientDrawable();
+                zone.setColor(0x22FFFFFF);
+                t.setBackground(zone);
+            }
+            guide.addView(t, new LinearLayout.LayoutParams(0, MATCH, weights[i]));
+        }
+        guide.setOnClickListener(v -> root.removeView(guide));
+        root.addView(guide, new FrameLayout.LayoutParams(MATCH, MATCH));
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -453,6 +476,13 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         // underneath it on every frame.
         getWindow().setBackgroundDrawable(null);
         for (int i = 0; i < swatches.length; i++) styleSwatch(swatches[i], i, i == chosen);
+    }
+
+    /** Holds the screen in whichever way it is turned right now, or lets it follow the tablet again. */
+    private void applyRotationLock() {
+        setRequestedOrientation(prefs.getBoolean("rotation_lock", false)
+                ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
+                : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
     }
 
     private void applyBrightness() {
@@ -763,6 +793,20 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         present(b.create(), input);
     }
 
+    /** Sends this book's notes, in page order, to any app that takes text. */
+    private void shareNotes() {
+        if (book.notes.isEmpty()) {
+            toast("This book has no notes yet");
+            return;
+        }
+        StringBuilder s = new StringBuilder("Notes from “").append(book.title).append("”\n");
+        for (java.util.Map.Entry<Integer, String> e : book.notes.entrySet()) {
+            s.append("\nPage ").append(e.getKey() + 1).append(": ").append(e.getValue()).append("\n");
+        }
+        Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, s.toString());
+        startActivity(Intent.createChooser(send, "Share notes"));
+    }
+
     private void notesChanged() {
         lib.save();
         view.invalidate();
@@ -1029,7 +1073,12 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             prefs.edit().putBoolean(P.CLOCK, on).apply();
             updateStatus();
         });
-        for (Switch s : new Switch[]{crop, dual, vol, clock}) layoutTab.addView(s, rowParams(4));
+        Switch lock = toggle(mc, "Lock screen rotation", prefs.getBoolean("rotation_lock", false));
+        lock.setOnCheckedChangeListener((v, on) -> {
+            prefs.edit().putBoolean("rotation_lock", on).apply();
+            applyRotationLock();
+        });
+        for (Switch s : new Switch[]{crop, dual, lock, vol, clock}) layoutTab.addView(s, rowParams(4));
 
         // ---- Tools
         rulerBtn = pill(mc, v -> {
@@ -1357,6 +1406,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
                     showMenu(false);
                 })
                 .setNegativeButton("Close", null)
+                .setNeutralButton("Share notes", (dlg, which) -> shareNotes())
                 .create(), null);
     }
 
@@ -1396,7 +1446,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.InsetDrawable(bg, d(16)));
         }
         dialog.show();
-        for (int which : new int[]{DialogInterface.BUTTON_POSITIVE, DialogInterface.BUTTON_NEGATIVE}) {
+        for (int which : new int[]{DialogInterface.BUTTON_POSITIVE, DialogInterface.BUTTON_NEGATIVE, DialogInterface.BUTTON_NEUTRAL}) {
             if (dialog.getButton(which) != null) dialog.getButton(which).setTextColor(ACCENT);
         }
         if (field != null) field.requestFocus();

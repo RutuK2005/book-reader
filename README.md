@@ -19,7 +19,9 @@ and pick your PDFs.
 **Library**
 - Covers, reading progress, and your own shelves (Work, Study, anything). "Reading" and "Finished"
   fill themselves in.
-- Hold a book and drag it to rearrange.
+- Hold a book and drag it to rearrange, onto a shelf's tab to file it, or onto another book to
+  merge two versions (say a PDF and an EPUB) into one entry. Shelf tabs can be dragged into any order.
+- Search by title, and a details page per book with time spent reading.
 - Today's reading time, a daily goal and a streak, folded away until you tap them.
 - Opens PDF, EPUB and TXT. EPUB and text books are laid out into pages when added, and their
   text size can be changed afterwards.

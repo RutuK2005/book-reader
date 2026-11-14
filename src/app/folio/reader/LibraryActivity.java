@@ -62,6 +62,9 @@ public class LibraryActivity extends Activity {
     private boolean importing;
     private String filter = ALL;
     private ScrollView scroll;
+    private LinearLayout listBox;
+    private String query = "";
+    private boolean searching, focusSearch;
     private int scrollSpeed;
     /** Scrolls the page while a dragged book is held near the top or bottom edge. */
     private final Runnable edgeScroller = new Runnable() {
@@ -144,31 +147,11 @@ public class LibraryActivity extends Activity {
                     + "They are copied into MyBookSpace, so they stay here even if you move the originals."), top(MATCH, WRAP, 60));
         } else {
             page.addView(chips(all, shelves), top(MATCH, WRAP, 22));
-            ArrayList<Library.Book> shown = new ArrayList<>();
-            for (Library.Book b : all) if (matches(b)) shown.add(b);
-            TextView heading = text(filterTitle() + "   " + shown.size(), 13, dim, false);
-            heading.setAllCaps(true);
-            heading.setLetterSpacing(0.08f);
-            // Covers only: hides every book's title and details for a cleaner shelf.
-            final boolean coversOnly = prefs.getBoolean("covers_only", false);
-            LinearLayout headRow = new LinearLayout(this);
-            headRow.setGravity(Gravity.CENTER_VERTICAL);
-            headRow.addView(heading, new LinearLayout.LayoutParams(0, WRAP, 1f));
-            TextView mode = text(coversOnly ? "Show titles" : "Covers only", 13, ACCENT, false);
-            mode.setPadding(d(10), d(6), 0, d(6));
-            mode.setOnClickListener(v -> {
-                prefs.edit().putBoolean("covers_only", !coversOnly).apply();
-                build();
-            });
-            headRow.addView(mode);
-            page.addView(headRow, top(MATCH, WRAP, 12));
-            if (shown.isEmpty()) {
-                page.addView(message(filter.equals(READING) ? "Nothing in progress. Open a book to start reading."
-                        : filter.equals(FINISHED) ? "No finished books yet."
-                        : "Nothing on this shelf yet.\nLong-press a book and choose “Move to shelf”."), top(MATCH, WRAP, 40));
-            } else {
-                grid(page, shown);
-            }
+            if (searching) page.addView(searchField(), top(MATCH, WRAP, 14));
+            listBox = new LinearLayout(this);
+            listBox.setOrientation(LinearLayout.VERTICAL);
+            page.addView(listBox, new LinearLayout.LayoutParams(MATCH, WRAP));
+            fillList();
         }
 
         final int keepY = scroll == null ? 0 : scroll.getScrollY();
@@ -200,6 +183,87 @@ public class LibraryActivity extends Activity {
         blp.bottomMargin = d(36);
         root.addView(busy, blp);
         setContentView(root);
+    }
+
+    /** The heading and the books under it. Kept separate so typing in the search box only redraws this. */
+    private void fillList() {
+        listBox.removeAllViews();
+        ArrayList<Library.Book> shown = new ArrayList<>();
+        String q = query.toLowerCase();
+        for (Library.Book b : lib.list()) {
+            if (matches(b) && (q.isEmpty() || b.title.toLowerCase().contains(q))) shown.add(b);
+        }
+        TextView heading = text(filterTitle() + "   " + shown.size(), 13, dim, false);
+        heading.setAllCaps(true);
+        heading.setLetterSpacing(0.08f);
+        LinearLayout headRow = new LinearLayout(this);
+        headRow.setGravity(Gravity.CENTER_VERTICAL);
+        headRow.addView(heading, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        TextView find = text(searching ? "Close search" : "Search", 13, ACCENT, false);
+        find.setPadding(d(10), d(6), d(10), d(6));
+        find.setOnClickListener(v -> {
+            searching = !searching;
+            query = "";
+            focusSearch = searching;
+            build();
+        });
+        headRow.addView(find);
+        // Covers only: hides every book's title and details for a cleaner shelf.
+        final boolean coversOnly = prefs.getBoolean("covers_only", false);
+        TextView mode = text(coversOnly ? "Show titles" : "Covers only", 13, ACCENT, false);
+        mode.setPadding(d(10), d(6), 0, d(6));
+        mode.setOnClickListener(v -> {
+            prefs.edit().putBoolean("covers_only", !coversOnly).apply();
+            build();
+        });
+        headRow.addView(mode);
+        listBox.addView(headRow, top(MATCH, WRAP, 12));
+        if (shown.isEmpty()) {
+            listBox.addView(message(!q.isEmpty() ? "No book matches “" + query + "”."
+                    : filter.equals(READING) ? "Nothing in progress. Open a book to start reading."
+                    : filter.equals(FINISHED) ? "No finished books yet."
+                    : "Nothing on this shelf yet.\nDrag a book onto this shelf's tab, or long-press a book and choose “Move to shelf”."), top(MATCH, WRAP, 40));
+        } else {
+            grid(listBox, shown);
+        }
+    }
+
+    private View searchField() {
+        final EditText field = new EditText(this);
+        field.setSingleLine(true);
+        field.setHint("Search your books");
+        field.setText(query);
+        field.setTextSize(15);
+        field.setTextColor(fg);
+        field.setHintTextColor(dim);
+        field.setPadding(d(18), d(11), d(18), d(11));
+        field.setBackground(round(card, 22));
+        field.setElevation(lift);
+        field.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                query = s.toString().trim();
+                fillList();
+            }
+        });
+        if (focusSearch) {
+            focusSearch = false;
+            field.post(() -> {
+                field.requestFocus();
+                android.view.inputmethod.InputMethodManager imm =
+                        (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm != null) imm.showSoftInput(field, 0);
+            });
+        }
+        return field;
     }
 
     private View header() {
@@ -332,12 +396,14 @@ public class LibraryActivity extends Activity {
                 counts.put(b.shelf, n == null ? 1 : n + 1);
             }
         }
-        row.addView(chip("All", all.size(), ALL, false));
-        row.addView(chip("Reading", reading, READING, false));
-        row.addView(chip("Finished", finished, FINISHED, false));
-        for (String s : shelves) {
-            Integer n = counts.get(s);
-            row.addView(chip(s, n == null ? 0 : n, s, true));
+        for (String key : tabOrder(shelves)) {
+            if (key.equals(ALL)) row.addView(chip("All", all.size(), ALL, false));
+            else if (key.equals(READING)) row.addView(chip("Reading", reading, READING, false));
+            else if (key.equals(FINISHED)) row.addView(chip("Finished", finished, FINISHED, false));
+            else {
+                Integer n = counts.get(key);
+                row.addView(chip(key, n == null ? 0 : n, key, true));
+            }
         }
         TextView add = text("+  New shelf", 14, ACCENT, false);
         add.setPadding(d(16), d(8), d(16), d(8));
@@ -353,7 +419,31 @@ public class LibraryActivity extends Activity {
         return hs;
     }
 
-    private View chip(String name, int count, final String key, boolean custom) {
+    /** The tabs in the reader's chosen order; anything new goes at the end. */
+    private ArrayList<String> tabOrder(ArrayList<String> shelves) {
+        ArrayList<String> valid = new ArrayList<>();
+        valid.add(ALL);
+        valid.add(READING);
+        valid.add(FINISHED);
+        valid.addAll(shelves);
+        ArrayList<String> out = new ArrayList<>();
+        String saved = prefs.getString("tab_order", null);
+        if (saved != null) {
+            for (String k : saved.split("\n", -1)) if (valid.contains(k) && !out.contains(k)) out.add(k);
+        }
+        for (String k : valid) if (!out.contains(k)) out.add(k);
+        return out;
+    }
+
+    private void moveTab(String key, String onto) {
+        ArrayList<String> order = tabOrder(lib.shelves());
+        int to = order.indexOf(onto);
+        if (to < 0 || !order.remove(key)) return;
+        order.add(to, key);
+        prefs.edit().putString("tab_order", TextUtils.join("\n", order)).apply();
+    }
+
+    private View chip(String name, int count, final String key, final boolean custom) {
         boolean on = filter.equals(key);
         TextView t = text(name + "  " + count, 14, on ? Color.WHITE : fg, false);
         t.setPadding(d(16), d(8), d(16), d(8));
@@ -363,12 +453,44 @@ public class LibraryActivity extends Activity {
             setFilter(key);
             build();
         });
-        if (custom) {
-            t.setOnLongClickListener(v -> {
-                shelfMenu(key);
-                return true;
-            });
-        }
+        // Hold a tab and drag it onto another to rearrange them. Letting go where it started
+        // opens the shelf's menu. A book dropped on a shelf's tab is filed on that shelf.
+        t.setOnLongClickListener(v -> {
+            v.startDragAndDrop(null, new View.DragShadowBuilder(v), "tab:" + key, 0);
+            return true;
+        });
+        t.setOnDragListener((v, e) -> {
+            Object what = e.getLocalState();
+            boolean tab = what instanceof String;
+            boolean book = what instanceof Library.Book && custom;
+            if (!tab && !book) return false;
+            switch (e.getAction()) {
+                case DragEvent.ACTION_DRAG_ENTERED:
+                    v.setAlpha(0.45f);
+                    break;
+                case DragEvent.ACTION_DRAG_EXITED:
+                case DragEvent.ACTION_DRAG_ENDED:
+                    v.setAlpha(1f);
+                    break;
+                case DragEvent.ACTION_DROP:
+                    v.setAlpha(1f);
+                    if (book) {
+                        ((Library.Book) what).shelf = key;
+                        lib.save();
+                        Toast.makeText(this, "Moved to " + key, Toast.LENGTH_SHORT).show();
+                        build();
+                    } else if (what.equals("tab:" + key)) {
+                        if (custom) shelfMenu(key);
+                    } else {
+                        moveTab(((String) what).substring(4), key);
+                        build();
+                    }
+                    break;
+                default:
+                    break;
+            }
+            return true;
+        });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(WRAP, WRAP);
         lp.rightMargin = d(8);
         t.setLayoutParams(lp);
@@ -532,6 +654,24 @@ public class LibraryActivity extends Activity {
                 .show();
     }
 
+    private void details(Library.Book b) {
+        StringBuilder s = new StringBuilder();
+        s.append(b.kind()).append("  ·  ").append(b.pages).append(" pages");
+        s.append("\n\n").append(b.finished() ? "Finished" : b.started() ? "On page " + (b.page + 1) + "  (" + percent(b) + "%)" : "Not started");
+        s.append("\nTime spent reading: ").append(minutes((int) Math.min(Integer.MAX_VALUE, b.readSec)));
+        if (b.samples >= 5 && b.secPerPage > 0 && !b.finished()) {
+            s.append("\nAbout ").append(minutes(Math.round((b.pages - 1 - b.page) * b.secPerPage))).append(" left at your pace");
+        }
+        int marks = 0;
+        for (ArrayList<float[]> list : b.highlights.values()) marks += list.size();
+        s.append("\n\n").append(b.bookmarks.size()).append(" bookmarks  ·  ").append(b.notes.size())
+                .append(" notes  ·  ").append(marks).append(" highlights");
+        s.append("\nShelf: ").append(b.shelf.isEmpty() ? "none" : b.shelf);
+        if (b.added > 0) s.append("\nAdded ").append(new SimpleDateFormat("d MMMM yyyy", Locale.getDefault()).format(new Date(b.added)));
+        s.append("\n\nFile: ").append(b.src);
+        new AlertDialog.Builder(this).setTitle(b.title).setMessage(s.toString()).setPositiveButton("Close", null).show();
+    }
+
     private void confirmMerge(final Library.Book dragged, final Library.Book target) {
         new AlertDialog.Builder(this)
                 .setTitle("Merge these two?")
@@ -603,11 +743,12 @@ public class LibraryActivity extends Activity {
     private void bookMenu(final Library.Book b) {
         new AlertDialog.Builder(this)
                 .setTitle(b.title)
-                .setItems(b.partner.isEmpty() ? new String[]{"Move to shelf…", "Rename", "Remove from library"}
-                        : new String[]{"Move to shelf…", "Rename", "Remove from library", "Separate the two versions"}, (dlg, which) -> {
+                .setItems(b.partner.isEmpty() ? new String[]{"Move to shelf…", "Rename", "Details", "Remove from library"}
+                        : new String[]{"Move to shelf…", "Rename", "Details", "Remove from library", "Separate the two versions"}, (dlg, which) -> {
                     if (which == 0) shelfPicker(b);
                     else if (which == 1) rename(b);
-                    else if (which == 2) confirmRemove(b);
+                    else if (which == 2) details(b);
+                    else if (which == 3) confirmRemove(b);
                     else {
                         lib.unmerge(b);
                         build();
