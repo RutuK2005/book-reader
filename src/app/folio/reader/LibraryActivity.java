@@ -47,7 +47,30 @@ import java.util.Locale;
 public class LibraryActivity extends Activity {
 
     private static final int REQ_PICK = 1;
-    private static final int ACCENT = 0xFFB5651D;
+    private static final int DEFAULT_ACCENT = 0xFFB5651D;
+    /** The accent of the colour scheme in use; set each time the page is built. */
+    private static int ACCENT = DEFAULT_ACCENT;
+
+    /** Home page colour schemes: page, card, text, accent, and 1 if it is a dark scheme. */
+    private static final String[] SCHEME_NAMES = {"Match reading theme",
+            "Linen", "Snow", "Sage", "Blush", "Sky", "Lavender", "Sand", "Mint", "Peach", "Rose gold", "Lemon", "Stone",
+            "Coral", "Teal", "Lilac", "Clay",
+            "Midnight", "Charcoal", "Forest", "Plum", "Espresso", "Ocean", "Black", "Wine", "Slate", "Ember", "Aurora", "Graphite"};
+    private static final int[][] SCHEMES = {null,
+            {0xFFEFEAE0, 0xFFFFFDF8, 0xFF1D1B18, 0xFFB5651D, 0}, {0xFFF2F4F7, 0xFFFFFFFF, 0xFF15171A, 0xFF2F6FED, 0},
+            {0xFFE4ECE1, 0xFFF8FBF6, 0xFF1F2A20, 0xFF3F7D4E, 0}, {0xFFF6E7E5, 0xFFFFF8F6, 0xFF2B1D1C, 0xFFC0504D, 0},
+            {0xFFE2EDF6, 0xFFF7FBFF, 0xFF16232E, 0xFF2B7BB9, 0}, {0xFFEBE6F5, 0xFFFAF8FF, 0xFF221D30, 0xFF6B4FB3, 0},
+            {0xFFEDE0CA, 0xFFFBF4E6, 0xFF33271A, 0xFFA0621E, 0}, {0xFFDDF0EA, 0xFFF5FCFA, 0xFF12302A, 0xFF1E8C73, 0},
+            {0xFFFAE5D3, 0xFFFFF7EF, 0xFF3A2416, 0xFFD9742B, 0}, {0xFFF2E0DC, 0xFFFFF6F3, 0xFF3B2422, 0xFFB76E79, 0},
+            {0xFFF5EFCB, 0xFFFFFCEB, 0xFF2E2A12, 0xFF9A7B00, 0}, {0xFFE1E1DE, 0xFFF6F6F4, 0xFF1E1E1C, 0xFF555555, 0},
+            {0xFFFBE3DC, 0xFFFFF6F3, 0xFF3A1D17, 0xFFE2573E, 0}, {0xFFDCEEEF, 0xFFF4FBFB, 0xFF10292B, 0xFF0F7C86, 0},
+            {0xFFF0E4F4, 0xFFFCF7FE, 0xFF2C1B33, 0xFFA153C2, 0}, {0xFFEBDCD2, 0xFFFAF2EC, 0xFF35221A, 0xFF9C4A2F, 0},
+            {0xFF0F1420, 0xFF1A2233, 0xFFE6EAF2, 0xFF5B8DEF, 1}, {0xFF17171A, 0xFF242428, 0xFFEDEDED, 0xFFD9902F, 1},
+            {0xFF0F1A14, 0xFF1A2A21, 0xFFE2EFE6, 0xFF3FA36B, 1}, {0xFF1A1220, 0xFF2A1D33, 0xFFEFE6F5, 0xFFA868E8, 1},
+            {0xFF1C1512, 0xFF2B211C, 0xFFF1E7DF, 0xFFC97F45, 1}, {0xFF0B1A22, 0xFF143040, 0xFFE0F0F6, 0xFF1E9FD6, 1},
+            {0xFF000000, 0xFF161616, 0xFFE8E8E8, 0xFFD9902F, 1}, {0xFF1F0F14, 0xFF331A22, 0xFFF5E4E8, 0xFFD4486A, 1},
+            {0xFF1B2026, 0xFF282F38, 0xFFE5E9EE, 0xFF6E9CCB, 1}, {0xFF1A1310, 0xFF2A1E18, 0xFFF6E9E0, 0xFFE8622C, 1},
+            {0xFF0E1A1B, 0xFF16292B, 0xFFE0F2F1, 0xFF2BB8A8, 1}, {0xFF202124, 0xFF2D2E32, 0xFFE8EAED, 0xFF9AA0A6, 1}};
     private static final int MATCH = ViewGroup.LayoutParams.MATCH_PARENT, WRAP = ViewGroup.LayoutParams.WRAP_CONTENT;
     /** Filters that are not user shelves; a shelf name can never start with '#'. */
     private static final String ALL = "", READING = "#reading", FINISHED = "#finished";
@@ -117,10 +140,23 @@ public class LibraryActivity extends Activity {
         bg = darkTheme ? paper : Themes.blend(paper, fg, 0.055f);
         card = darkTheme ? Themes.blend(paper, fg, 0.10f) : Themes.blend(paper, 0xFFFFFFFF, 0.65f);
         lift = darkTheme ? 0 : d(2);
+        ACCENT = DEFAULT_ACCENT;
+        int scheme = prefs.getInt("home_scheme", 0);
+        if (scheme > 0 && scheme < SCHEMES.length) {
+            // The home page has its own colours, separate from the reading theme.
+            int[] sc = SCHEMES[scheme];
+            bg = sc[0];
+            card = sc[1];
+            fg = sc[2];
+            ACCENT = sc[3];
+            darkTheme = sc[4] == 1;
+            dim = (fg & 0x00FFFFFF) | 0x99000000;
+            lift = darkTheme ? 0 : d(2);
+        }
         Window w = getWindow();
         w.setStatusBarColor(bg);
         w.setNavigationBarColor(bg);
-        w.getDecorView().setSystemUiVisibility(Themes.isDark(theme) ? 0
+        w.getDecorView().setSystemUiVisibility(darkTheme ? 0
                 : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
 
         ArrayList<Library.Book> all = lib.list();
@@ -141,6 +177,7 @@ public class LibraryActivity extends Activity {
             if (b.started() && !b.finished() && (current == null || b.opened > current.opened)) current = b;
         }
         if (open && current != null) page.addView(continueCard(current), top(MATCH, WRAP, 14));
+        if (open) page.addView(coloursRow(), top(MATCH, WRAP, 14));
 
         if (all.isEmpty()) {
             page.addView(message("Your library is empty.\n\nTap “Add books” and choose the books you want to read (PDF, EPUB or TXT). "
@@ -824,6 +861,104 @@ public class LibraryActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    /** The colour setting, shown in the unfolded section: the scheme in use and a way to change it. */
+    private View coloursRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(d(18), d(12), d(18), d(12));
+        row.setBackground(press(round(card, 18)));
+        row.setElevation(lift);
+        View dot = new View(this);
+        GradientDrawable ring = new GradientDrawable();
+        ring.setShape(GradientDrawable.OVAL);
+        ring.setColor(ACCENT);
+        dot.setBackground(ring);
+        row.addView(dot, new LinearLayout.LayoutParams(d(20), d(20)));
+        int scheme = prefs.getInt("home_scheme", 0);
+        TextView name = text("Home page colours   ·   " + SCHEME_NAMES[scheme < SCHEME_NAMES.length ? scheme : 0], 14, fg, false);
+        name.setSingleLine(true);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+        nlp.leftMargin = d(12);
+        row.addView(name, nlp);
+        row.addView(text("Change", 13, ACCENT, false));
+        row.setOnClickListener(v -> colourPicker());
+        return row;
+    }
+
+    /** A grid of colour schemes for the home page, each tile drawn in its own colours. */
+    private void colourPicker() {
+        final int current = prefs.getInt("home_scheme", 0);
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        grid.setPadding(d(16), d(8), d(16), d(8));
+        final AlertDialog[] dialog = new AlertDialog[1];
+        int cols = 3;
+        for (int i = 0; i < SCHEMES.length; i += cols) {
+            LinearLayout row = new LinearLayout(this);
+            for (int k = 0; k < cols; k++) {
+                final int index = i + k;
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, index < SCHEMES.length ? WRAP : 1, 1f);
+                lp.setMargins(d(4), d(4), d(4), d(4));
+                if (index >= SCHEMES.length) {
+                    row.addView(new View(this), lp);
+                    continue;
+                }
+                int[] sc = SCHEMES[index];
+                int tileBg = sc == null ? 0xFFFFFFFF : sc[0], tileFg = sc == null ? 0xFF222222 : sc[2];
+                int tileAccent = sc == null ? DEFAULT_ACCENT : sc[3], tileCard = sc == null ? 0xFFEFEFEF : sc[1];
+                LinearLayout tile = new LinearLayout(this);
+                tile.setOrientation(LinearLayout.VERTICAL);
+                tile.setGravity(Gravity.CENTER_HORIZONTAL);
+                tile.setPadding(d(6), d(10), d(6), d(8));
+                GradientDrawable tb = new GradientDrawable();
+                tb.setColor(tileBg);
+                tb.setCornerRadius(d(14));
+                tb.setStroke(d(index == current ? 3 : 1), index == current ? tileAccent : 0x33000000);
+                tile.setBackground(tb);
+                // A miniature of the page: a card with a line of text and an accent button.
+                LinearLayout mini = new LinearLayout(this);
+                mini.setGravity(Gravity.CENTER_VERTICAL);
+                mini.setPadding(d(8), d(6), d(8), d(6));
+                GradientDrawable mb = new GradientDrawable();
+                mb.setColor(tileCard);
+                mb.setCornerRadius(d(8));
+                mini.setBackground(mb);
+                TextView aa = new TextView(this);
+                aa.setText("Aa");
+                aa.setTextSize(14);
+                aa.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
+                aa.setTextColor(tileFg);
+                mini.addView(aa, new LinearLayout.LayoutParams(0, WRAP, 1f));
+                View pill = new View(this);
+                GradientDrawable pb = new GradientDrawable();
+                pb.setColor(tileAccent);
+                pb.setCornerRadius(d(8));
+                pill.setBackground(pb);
+                mini.addView(pill, new LinearLayout.LayoutParams(d(22), d(14)));
+                tile.addView(mini, new LinearLayout.LayoutParams(MATCH, WRAP));
+                TextView name = new TextView(this);
+                name.setText(SCHEME_NAMES[index]);
+                name.setTextSize(11);
+                name.setTextColor(tileFg);
+                name.setGravity(Gravity.CENTER);
+                name.setMaxLines(2);
+                name.setPadding(0, d(6), 0, 0);
+                tile.addView(name);
+                tile.setOnClickListener(v -> {
+                    prefs.edit().putInt("home_scheme", index).apply();
+                    if (dialog[0] != null) dialog[0].dismiss();
+                    build();
+                });
+                row.addView(tile, lp);
+            }
+            grid.addView(row);
+        }
+        ScrollView sv = new ScrollView(this);
+        sv.addView(grid);
+        dialog[0] = new AlertDialog.Builder(this).setTitle("Home page colours").setView(sv).setNegativeButton("Close", null).create();
+        dialog[0].show();
     }
 
     private void goalDialog() {
