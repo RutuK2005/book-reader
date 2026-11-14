@@ -313,7 +313,15 @@ public class LibraryActivity extends Activity {
         date.setLetterSpacing(0.08f);
         titles.addView(date);
         titles.addView(text("MyBookSpace", 30, fg, true));
-        titles.addView(text("by Rutuparn K", 12, dim, false));
+        TextView by = text("by Rutuparn K   ·   github.com/RutuK2005", 12, dim, false);
+        by.setOnClickListener(v -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/RutuK2005")));
+            } catch (Exception e) {
+                Toast.makeText(this, "No browser to open the link", Toast.LENGTH_SHORT).show();
+            }
+        });
+        titles.addView(by);
         head.addView(titles, new LinearLayout.LayoutParams(0, WRAP, 1f));
         TextView add = text("+  Add books", 15, Color.WHITE, false);
         add.setPadding(d(20), d(11), d(20), d(11));
