@@ -47,6 +47,8 @@ final class Library {
         final ArrayList<Integer> bookmarks = new ArrayList<>();
         /** Short notes attached to pages (page index -> text). */
         final TreeMap<Integer, String> notes = new TreeMap<>();
+        /** Highlighted areas per page, each as fractions of the page (l, t, r, b). */
+        final HashMap<Integer, ArrayList<float[]>> highlights = new HashMap<>();
         /** Running average of reading speed, for the "time left" estimate. */
         float secPerPage;
         int samples;
@@ -294,6 +296,13 @@ final class Library {
                 JSONObject notes = new JSONObject();
                 for (Map.Entry<Integer, String> e : b.notes.entrySet()) notes.put(String.valueOf(e.getKey()), e.getValue());
                 o.put("notes", notes);
+                JSONObject hl = new JSONObject();
+                for (Map.Entry<Integer, ArrayList<float[]>> e : b.highlights.entrySet()) {
+                    JSONArray list = new JSONArray();
+                    for (float[] r : e.getValue()) list.put(toJson(r));
+                    hl.put(String.valueOf(e.getKey()), list);
+                }
+                o.put("highlights", hl);
                 o.put("secPerPage", b.secPerPage).put("samples", b.samples);
                 o.put("readSec", b.readSec).put("celebrated", b.celebrated);
                 arr.put(o);
@@ -362,6 +371,19 @@ final class Library {
                     for (Iterator<String> it = notes.keys(); it.hasNext(); ) {
                         String k = it.next();
                         b.notes.put(Integer.parseInt(k), notes.optString(k));
+                    }
+                }
+                JSONObject hl = o.optJSONObject("highlights");
+                if (hl != null) {
+                    for (Iterator<String> it = hl.keys(); it.hasNext(); ) {
+                        String k = it.next();
+                        JSONArray list = hl.optJSONArray(k);
+                        ArrayList<float[]> rects = new ArrayList<>();
+                        for (int q = 0; list != null && q < list.length(); q++) {
+                            float[] r = fromJson(list.optJSONArray(q));
+                            if (r != null) rects.add(r);
+                        }
+                        if (!rects.isEmpty()) b.highlights.put(Integer.parseInt(k), rects);
                     }
                 }
                 b.secPerPage = (float) o.optDouble("secPerPage", 0);

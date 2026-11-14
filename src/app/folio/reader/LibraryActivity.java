@@ -101,7 +101,9 @@ public class LibraryActivity extends Activity {
         page.setPadding(d(24), d(18), d(24), d(40));
 
         page.addView(header());
-        page.addView(statsCard(), top(MATCH, WRAP, 16));
+        final boolean open = prefs.getBoolean(P.HOME_OPEN, false);
+        page.addView(summaryRow(open), top(MATCH, WRAP, 14));
+        if (open) page.addView(statsCard(), top(MATCH, WRAP, 10));
 
         Library.Book current = null;
         for (Library.Book b : all) {
@@ -110,7 +112,7 @@ public class LibraryActivity extends Activity {
                 break;
             }
         }
-        if (current != null) page.addView(continueCard(current), top(MATCH, WRAP, 14));
+        if (open && current != null) page.addView(continueCard(current), top(MATCH, WRAP, 14));
 
         if (all.isEmpty()) {
             page.addView(message("Your library is empty.\n\nTap “Add books” and choose the PDFs you want to read. "
@@ -166,6 +168,24 @@ public class LibraryActivity extends Activity {
         add.setOnClickListener(v -> pick());
         head.addView(add);
         return head;
+    }
+
+    /** One line that unfolds into the daily goal and the book in progress. Folded by default. */
+    private View summaryRow(final boolean open) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(d(18), d(12), d(18), d(12));
+        row.setBackground(round(card, 18));
+        int streak = lib.streak();
+        TextView t = text("Today  " + minutes(lib.secondsOn(0)) + "   ·   " + streak + (streak == 1 ? " day" : " days") + " streak", 14, fg, false);
+        t.setSingleLine(true);
+        row.addView(t, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        row.addView(text(open ? "Hide  ▴" : "Goal and current book  ▾", 13, ACCENT, false));
+        row.setOnClickListener(v -> {
+            prefs.edit().putBoolean(P.HOME_OPEN, !open).apply();
+            build();
+        });
+        return row;
     }
 
     /** Today's minutes against the daily goal, the streak, and the week. Tap to change the goal. */

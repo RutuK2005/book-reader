@@ -51,6 +51,9 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
         /** A page has started to turn (fired once per turn, before onPageChanged). */
         void onTurn();
+
+        /** A highlight was added or removed. */
+        void onMarksChanged();
     }
 
     static final int ANIM_CURL = 0, ANIM_SLIDE = 1, ANIM_NONE = 2;
@@ -106,6 +109,13 @@ final class ReaderView extends View implements PdfEngine.Callback {
     private final Path ribbonPath = new Path();
     private final Paint notePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path notePath = new Path();
+
+    // Reading ruler and highlighter. Both are plain rectangles drawn with the page, so they cost
+    // nothing while the page sits still.
+    boolean rulerOn, marking;
+    private float rulerY = 0.4f, markX, markY;
+    private boolean rulerMove, markMoved;
+    private final Paint dimPaint = new Paint(), markPaint = new Paint();
 
     // Page turn state.
     private int tState = IDLE, tDir;
@@ -169,6 +179,8 @@ final class ReaderView extends View implements PdfEngine.Callback {
         footer.setTextSize(12.5f * c.getResources().getDisplayMetrics().scaledDensity);
         ribbon.setColor(0xFFC0392B);
         notePaint.setColor(0xFFE8A33D);
+        dimPaint.setColor(0x73000000);
+        markPaint.setColor(0x66FFD400);
         // Unit-length gradients; each is stretched with canvas.scale() when drawn.
         foldShadow.setShader(new LinearGradient(0, 0, -1, 0, 0x66000000, 0x00000000, Shader.TileMode.CLAMP));
         edgeGradH = new LinearGradient(0, 0, 1, 0, 0x48000000, 0x00000000, Shader.TileMode.CLAMP);
@@ -490,7 +502,71 @@ final class ReaderView extends View implements PdfEngine.Callback {
         }
         if (bookmarked(screen)) c.drawPath(ribbonPath, ribbon);
         if (noted(screen)) c.drawPath(notePath, notePaint);
+        drawMarks(c, screen);
+        if (rulerOn && screen == cur && tState == IDLE) {
+            // Dim everything but a band a few lines tall; drag up or down to move it.
+            float h = getHeight() - footerH, band = 96 * dp;
+            float top = clamp(rulerY * h - band / 2f, 0f, h - band);
+            c.drawRect(0, 0, getWidth(), top, dimPaint);
+            c.drawRect(0, top + band, getWidth(), h, dimPaint);
+        }
         drawFooter(c, screen);
+    }
+
+    private void drawMarks(Canvas c, int screen) {
+        if (book == null || engine == null || screen < 0 || screen >= layout.screenCount()) return;
+        int first = layout.firstPage(screen);
+        for (int i = 0; i < layout.pagesOn(screen); i++) {
+            java.util.ArrayList<float[]> list = book.highlights.get(first + i);
+            float[] p = engine.placed.get(first + i);
+            if (list == null || p == null) continue;
+            for (float[] r : list) {
+                c.drawRect(p[0] + (r[0] * p[7] - p[4]) * p[6], p[1] + (r[1] * p[8] - p[5]) * p[6],
+                        p[0] + (r[2] * p[7] - p[4]) * p[6], p[1] + (r[3] * p[8] - p[5]) * p[6], markPaint);
+            }
+        }
+        if (markMoved && screen == cur) {
+            c.drawRect(Math.min(downX, markX), Math.min(downY, markY), Math.max(downX, markX), Math.max(downY, markY), markPaint);
+        }
+    }
+
+    /** Turns the dragged rectangle into a highlight on the page it started on, in page fractions. */
+    private void commitMark() {
+        float l = Math.min(downX, markX), t = Math.min(downY, markY), r = Math.max(downX, markX), b = Math.max(downY, markY);
+        if (r - l < 12 * dp || b - t < 6 * dp) return;
+        int first = layout.firstPage(cur);
+        for (int i = 0; i < layout.pagesOn(cur); i++) {
+            float[] p = engine.placed.get(first + i);
+            if (p == null || downX < p[0] || downX > p[0] + p[2]) continue;
+            float[] f = {clamp(((l - p[0]) / p[6] + p[4]) / p[7], 0f, 1f), clamp(((t - p[1]) / p[6] + p[5]) / p[8], 0f, 1f),
+                    clamp(((r - p[0]) / p[6] + p[4]) / p[7], 0f, 1f), clamp(((b - p[1]) / p[6] + p[5]) / p[8], 0f, 1f)};
+            java.util.ArrayList<float[]> list = book.highlights.get(first + i);
+            if (list == null) book.highlights.put(first + i, list = new java.util.ArrayList<>());
+            list.add(f);
+            if (listener != null) listener.onMarksChanged();
+            return;
+        }
+    }
+
+    private boolean eraseMarkAt(float x, float y) {
+        int first = layout.firstPage(cur);
+        for (int i = 0; i < layout.pagesOn(cur); i++) {
+            java.util.ArrayList<float[]> list = book.highlights.get(first + i);
+            float[] p = engine.placed.get(first + i);
+            if (list == null || p == null) continue;
+            float fx = ((x - p[0]) / p[6] + p[4]) / p[7], fy = ((y - p[1]) / p[6] + p[5]) / p[8];
+            for (int k = list.size() - 1; k >= 0; k--) {
+                float[] r = list.get(k);
+                if (fx >= r[0] && fx <= r[2] && fy >= r[1] && fy <= r[3]) {
+                    list.remove(k);
+                    if (list.isEmpty()) book.highlights.remove(first + i);
+                    if (listener != null) listener.onMarksChanged();
+                    invalidate();
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void drawSlide(Canvas c, int top, int bottom) {
@@ -989,6 +1065,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
             downY = lastY = y;
             dragging = multi = tapUsed = riffled = false;
             swipeDir = 0;
+            rulerMove = markMoved = false;
             removeCallbacks(riffle);
             riffleDir = (zoom == 1f && !menuOpen) ? zoneOf(x) : 0;
             if (riffleDir != 0) postDelayed(riffle, 500);
@@ -1021,6 +1098,16 @@ final class ReaderView extends View implements PdfEngine.Callback {
                     panY -= y - lastY;
                     clampPan();
                     invalidate();
+                } else if (marking) {
+                    if (Math.abs(x - downX) > slop || Math.abs(y - downY) > slop) markMoved = true;
+                    markX = x;
+                    markY = y;
+                    if (markMoved) invalidate();
+                } else if (rulerMove || (rulerOn && !dragging && Math.abs(y - downY) > slop
+                        && Math.abs(y - downY) > Math.abs(x - downX))) {
+                    rulerMove = true;
+                    rulerY = clamp(y / (getHeight() - footerH), 0f, 1f);
+                    invalidate();
                 } else {
                     float dx = x - downX, dy = y - downY;
                     if (!dragging && Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy)) {
@@ -1040,6 +1127,16 @@ final class ReaderView extends View implements PdfEngine.Callback {
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 boolean cancelled = action == MotionEvent.ACTION_CANCEL;
+                if (markMoved) {
+                    if (!cancelled) commitMark();
+                    markMoved = false;
+                    invalidate();
+                    break;
+                }
+                if (rulerMove) {
+                    rulerMove = false;
+                    break;
+                }
                 if (zoom > 1f) {
                     requestZoom();
                 } else if (tState == DRAG) {
@@ -1061,6 +1158,10 @@ final class ReaderView extends View implements PdfEngine.Callback {
         public boolean onSingleTapUp(MotionEvent e) {
             if (riffled) {
                 // Letting go after a riffle is not a tap.
+                tapUsed = true;
+                return true;
+            }
+            if (marking && !menuOpen && eraseMarkAt(e.getX(), e.getY())) {
                 tapUsed = true;
                 return true;
             }

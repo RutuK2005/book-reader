@@ -203,6 +203,9 @@ final class PdfEngine {
 
     volatile int thumbSeq;
 
+    /** Where each page landed in its screen at zoom 1: {x, y, width, height, cropLeft, cropTop, scale, pageW, pageH}. */
+    final java.util.concurrent.ConcurrentHashMap<Integer, float[]> placed = new java.util.concurrent.ConcurrentHashMap<>();
+
     /** A small picture of one whole page, for previewing where the page slider will land. */
     void requestThumb(final int seq, final int page, final int maxW, final int maxH, final ThumbResult r) {
         worker.post(() -> {
@@ -289,6 +292,7 @@ final class PdfEngine {
                 float dw = (sr - sl) * sc, dh = (sb - st) * sc;
                 float dx = align == 0 ? cl + pad + (aw - dw) / 2f : align > 0 ? cr - pad - dw : cl + pad;
                 float dy = pad + (ah - dh) / 2f;
+                if (zoom == 1f) placed.put(pg, new float[]{dx, dy, dw, dh, sl, st, sc, pw, ph});
                 m.setTranslate(-sl, -st);
                 m.postScale(sc, sc);
                 m.postTranslate(dx, dy);

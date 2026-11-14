@@ -77,7 +77,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     private int autoSec, sleepMin;
     private long sleepAt;
     private View sleepCover;
-    private TextView autoBtn, sleepBtn, noteBtn;
+    private TextView autoBtn, sleepBtn, noteBtn, rulerBtn, markBtn, dictBtn;
 
     // Preview of the page the slider is on.
     private LinearLayout thumbBox;
@@ -144,7 +144,8 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         applyTheme();
         applyBrightness();
         immersive();
-        if (prefs.getBoolean(P.SOUND, true)) pageSound = new PageSound();
+        view.rulerOn = prefs.getBoolean(P.RULER, false);
+        applySaver();
 
         String id = getIntent().getStringExtra(EXTRA_ID);
         Library.Book b = id == null ? null : lib.find(id);
@@ -311,7 +312,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     }
 
     private void keepAwake() {
-        if (sleepCover != null) return;
+        if (sleepCover != null || saver()) return;
         // Setting a window flag forces a window re-layout, so only do it when it is not already set.
         if (!awake) {
             awake = true;
@@ -398,6 +399,11 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     }
 
     @Override
+    public void onMarksChanged() {
+        new Thread(() -> lib.save()).start();
+    }
+
+    @Override
     public void onTurn() {
         if (pageSound != null) pageSound.play();
     }
@@ -440,6 +446,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
 
     private void applyBrightness() {
         float b = prefs.getFloat(P.BRIGHT, -1f);
+        if (saver()) b = b < 0f ? 0.15f : Math.min(b, 0.15f);
         WindowManager.LayoutParams lp = getWindow().getAttributes();
         lp.screenBrightness = b < 0f ? WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE : Math.max(0.01f, b);
         getWindow().setAttributes(lp);
@@ -459,7 +466,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     }
 
     private void updateStatus() {
-        boolean show = prefs.getBoolean(P.CLOCK, true);
+        boolean show = prefs.getBoolean(P.CLOCK, true) && !saver();
         String s = "";
         if (show) {
             s = DateFormat.getTimeFormat(this).format(new Date());
@@ -526,6 +533,13 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         boolean noted = ready && noteKey() >= 0;
         noteBtn.setText(noted ? "Edit note" : "Add note");
         stylePill(noteBtn, noted);
+        if (rulerBtn == null) return;
+        rulerBtn.setText(view.rulerOn ? "Ruler: on" : "Reading ruler");
+        stylePill(rulerBtn, view.rulerOn);
+        markBtn.setText(view.marking ? "Highlighting: on" : "Highlight");
+        stylePill(markBtn, view.marking);
+        dictBtn.setText("Dictionary");
+        stylePill(dictBtn, false);
     }
 
     private void stylePill(TextView t, boolean on) {
@@ -543,10 +557,105 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     }
 
     private void celebrate() {
+        if (saver()) {
+            toast("You finished “" + book.title + "”");
+            return;
+        }
         ConfettiView confetti = new ConfettiView(this);
         root.addView(confetti, new FrameLayout.LayoutParams(MATCH, MATCH));
         confetti.start();
         Toast.makeText(this, "You finished “" + book.title + "”", Toast.LENGTH_LONG).show();
+    }
+
+    // ---------------------------------------------------------------- battery saver and dictionary
+
+    private boolean saver() {
+        return prefs.getBoolean(P.SAVER, false);
+    }
+
+    /**
+     * Extreme battery saver: pages change instantly with no animation or sound, the screen is
+     * held dim, and the tablet's own screen timeout applies instead of the reader holding it on.
+     * The backlight is what drains an LCD tablet, so dimness and an early screen-off matter most.
+     */
+    private void applySaver() {
+        boolean on = saver();
+        view.setAnimMode(on ? ReaderView.ANIM_NONE : prefs.getInt(P.ANIM, ReaderView.ANIM_CURL));
+        if (pageSound != null) pageSound.release();
+        pageSound = !on && prefs.getBoolean(P.SOUND, true) ? new PageSound() : null;
+        if (on) {
+            if (autoSec > 0) setAuto(0);
+            handler.removeCallbacks(letScreenSleep);
+            letScreenSleep.run();
+        } else {
+            keepAwake();
+        }
+        applyBrightness();
+        updateStatus();
+    }
+
+    private void dictionaryDialog() {
+        final EditText input = new EditText(new ContextThemeWrapper(this, android.R.style.Theme_Material_Dialog_Alert));
+        input.setSingleLine(true);
+        input.setHint("Type a word");
+        input.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(d(22), d(8), d(22), 0);
+        wrap.addView(input);
+        present(new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Dictionary")
+                .setView(wrap)
+                .setPositiveButton("Look up", (dlg, which) -> lookUp(input.getText().toString().trim()))
+                .setNegativeButton("Cancel", null)
+                .create(), input);
+    }
+
+    /** Fetches a definition over the network; nothing is requested until the reader asks. */
+    private void lookUp(final String word) {
+        if (word.isEmpty()) return;
+        toast("Looking up “" + word + "”…");
+        new Thread(() -> {
+            String result;
+            try {
+                java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(
+                        "https://api.dictionaryapi.dev/api/v2/entries/en/" + java.net.URLEncoder.encode(word, "UTF-8")).openConnection();
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(8000);
+                if (c.getResponseCode() != 200) {
+                    result = "No entry found for “" + word + "”.";
+                } else {
+                    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                    try (java.io.InputStream in = c.getInputStream()) {
+                        byte[] b = new byte[4096];
+                        int n;
+                        while ((n = in.read(b)) > 0) buf.write(b, 0, n);
+                    }
+                    org.json.JSONArray meanings = new org.json.JSONArray(buf.toString("UTF-8")).getJSONObject(0).getJSONArray("meanings");
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 0; i < Math.min(3, meanings.length()); i++) {
+                        org.json.JSONObject m = meanings.getJSONObject(i);
+                        org.json.JSONArray defs = m.getJSONArray("definitions");
+                        if (sb.length() > 0) sb.append("\n\n");
+                        sb.append(m.optString("partOfSpeech"));
+                        for (int k = 0; k < Math.min(2, defs.length()); k++) {
+                            sb.append("\n").append(k + 1).append(". ").append(defs.getJSONObject(k).optString("definition"));
+                        }
+                    }
+                    result = sb.length() == 0 ? "No entry found for “" + word + "”." : sb.toString();
+                }
+            } catch (Exception e) {
+                result = "Couldn't reach the dictionary. Check the Wi-Fi connection.";
+            }
+            final String text = result;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                present(new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                        .setTitle(word)
+                        .setMessage(text)
+                        .setPositiveButton("Close", null)
+                        .create(), null);
+            });
+        }).start();
     }
 
     // ---------------------------------------------------------------- notes
@@ -709,7 +818,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             b.setPadding(0, d(8), 0, d(8));
             b.setOnClickListener(v -> {
                 prefs.edit().putInt(P.ANIM, mode).apply();
-                view.setAnimMode(mode);
+                if (!saver()) view.setAnimMode(mode);
                 styleAnimButtons();
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
@@ -806,8 +915,8 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         sound.setOnCheckedChangeListener((v, on) -> {
             prefs.edit().putBoolean(P.SOUND, on).apply();
             if (pageSound != null) pageSound.release();
-            pageSound = on ? new PageSound() : null;
-            if (on) pageSound.play();
+            pageSound = on && !saver() ? new PageSound() : null;
+            if (pageSound != null) pageSound.play();
         });
         CheckBox night = check(mc, "Night theme 9 pm – 6 am", prefs.getBoolean(P.AUTO_NIGHT, false));
         night.setOnCheckedChangeListener((v, on) -> {
@@ -828,6 +937,36 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             pills.addView(p, lp);
         }
         bot.addView(pills, rowParams(12));
+
+        LinearLayout tools = row(mc);
+        rulerBtn = pill(mc, v -> {
+            view.rulerOn = !view.rulerOn;
+            prefs.edit().putBoolean(P.RULER, view.rulerOn).apply();
+            view.invalidate();
+            refreshPills();
+            if (view.rulerOn) toast("Drag up or down on the page to move the ruler");
+        });
+        markBtn = pill(mc, v -> {
+            view.marking = !view.marking;
+            refreshPills();
+            if (view.marking) {
+                showMenu(false);
+                toast("Drag over a passage to highlight it. Tap a highlight to remove it.");
+            }
+        });
+        dictBtn = pill(mc, v -> dictionaryDialog());
+        for (TextView p : new TextView[]{rulerBtn, markBtn, dictBtn}) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+            lp.setMargins(d(4), 0, d(4), 0);
+            tools.addView(p, lp);
+        }
+        bot.addView(tools, rowParams(8));
+        CheckBox saverBox = check(mc, "Extreme battery saver", prefs.getBoolean(P.SAVER, false));
+        saverBox.setOnCheckedChangeListener((v, on) -> {
+            prefs.edit().putBoolean(P.SAVER, on).apply();
+            applySaver();
+        });
+        bot.addView(saverBox, rowParams(8));
         refreshPills();
 
         // The panel can be taller than a landscape screen at large font sizes, so it scrolls,

@@ -19,6 +19,9 @@ final class P {
     static final String AUTO_SEC = "auto_turn_sec";
     static final String GOAL_MIN = "goal_min";
     static final String SHELF = "shelf_filter";
+    static final String SAVER = "battery_saver";
+    static final String RULER = "ruler";
+    static final String HOME_OPEN = "home_open";
 
     /** The theme to read in right now: Night after dark if the reader asked for that. */
     static int theme(SharedPreferences p) {
