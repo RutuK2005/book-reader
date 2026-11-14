@@ -94,7 +94,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
     private final Paint edgeShadowH = new Paint();
     private final Paint edgeShadowV = new Paint();
     private final Paint flapShade = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Shader edgeGradH, edgeGradV, flapGrad, rollGrad;
+    private Shader edgeGradH, edgeGradV, flapGrad, rollGrad;
     private final Matrix shaderMatrix = new Matrix();
     private final float[] quad = new float[8], poly = new float[16], poly2 = new float[16];
     private final Path pathA = new Path(), pathB = new Path();
@@ -184,30 +184,6 @@ final class ReaderView extends View implements PdfEngine.Callback {
         notePaint.setColor(0xFFE8A33D);
         dimPaint.setColor(0x73000000);
         markPaint.setColor(0x66FFD400);
-        // Unit-length gradients; each is stretched with canvas.scale() when drawn.
-        // Shadows ease out (strong only right at the paper's edge) rather than ramping evenly,
-        // which is what makes a shadow look soft instead of like a grey stripe.
-        float[] ease = {0f, 0.30f, 0.65f, 1f};
-        foldShadow.setShader(new LinearGradient(0, 0, -1, 0,
-                new int[]{0x38000000, 0x18000000, 0x06000000, 0x00000000}, ease, Shader.TileMode.CLAMP));
-        int[] soft = {0x24000000, 0x0F000000, 0x04000000, 0x00000000};
-        edgeGradH = new LinearGradient(0, 0, 1, 0, soft, ease, Shader.TileMode.CLAMP);
-        edgeGradV = new LinearGradient(0, 0, 0, 1, soft, ease, Shader.TileMode.CLAMP);
-        edgeShadowH.setShader(edgeGradH);
-        edgeShadowV.setShader(edgeGradV);
-        // Across the flat part of the turned sheet, from where it leaves the roll to its free
-        // edge: it starts at the roll's last shade and darkens a little again at the edge.
-        flapGrad = new LinearGradient(0, 0, 1, 0,
-                new int[]{0x14000000, 0x00000000, 0x00000000, 0x08000000},
-                new float[]{0f, 0.30f, 0.85f, 1f}, Shader.TileMode.CLAMP);
-        flapShade.setShader(flapGrad);
-        int[] light = new int[33];
-        float[] at = new float[light.length];
-        for (int i = 0; i < light.length; i++) {
-            at[i] = i / (float) (light.length - 1);
-            light[i] = rollShade(PI * at[i]);
-        }
-        rollGrad = new LinearGradient(0, 0, 1, 0, light, at, Shader.TileMode.CLAMP);
 
         taps = new GestureDetector(c, new TapListener());
         taps.setIsLongpressEnabled(false);
@@ -262,12 +238,42 @@ final class ReaderView extends View implements PdfEngine.Callback {
         invalidate();
     }
 
+    /**
+     * Builds the page-turn shadows in a darker shade of the paper itself. Plain black laid over
+     * cream paper turns a muddy grey; a shadow on real paper is the paper's own colour, deeper.
+     * All are unit-length gradients that ease out, stretched to size when drawn.
+     */
+    private void buildShadows(int paper) {
+        int rgb = Themes.blend(paper, 0xFF000000, 0.72f) & 0x00FFFFFF;
+        float[] ease = {0f, 0.25f, 0.6f, 1f};
+        foldShadow.setShader(new LinearGradient(0, 0, -1, 0,
+                new int[]{0x40000000 | rgb, 0x1C000000 | rgb, 0x07000000 | rgb, rgb}, ease, Shader.TileMode.CLAMP));
+        int[] soft = {0x2E000000 | rgb, 0x12000000 | rgb, 0x04000000 | rgb, rgb};
+        edgeGradH = new LinearGradient(0, 0, 1, 0, soft, ease, Shader.TileMode.CLAMP);
+        edgeGradV = new LinearGradient(0, 0, 0, 1, soft, ease, Shader.TileMode.CLAMP);
+        edgeShadowH.setShader(edgeGradH);
+        edgeShadowV.setShader(edgeGradV);
+        // Across the flat part of the turned sheet: picks up where the roll's shade ends.
+        flapGrad = new LinearGradient(0, 0, 1, 0,
+                new int[]{0x0C000000 | rgb, rgb, rgb, 0x0A000000 | rgb},
+                new float[]{0f, 0.25f, 0.9f, 1f}, Shader.TileMode.CLAMP);
+        flapShade.setShader(flapGrad);
+        int[] light = new int[33];
+        float[] at = new float[light.length];
+        for (int i = 0; i < light.length; i++) {
+            at[i] = i / (float) (light.length - 1);
+            light[i] = rollShade(PI * at[i], rgb);
+        }
+        rollGrad = new LinearGradient(0, 0, 1, 0, light, at, Shader.TileMode.CLAMP);
+    }
+
     void applyTheme(int theme, float warmth) {
         bg = Themes.tint(Themes.BG[theme], warmth);
         fg = Themes.tint(Themes.FG[theme], warmth);
         pagePaint.setColorFilter(Themes.filter(theme, warmth));
         fillPaint.setColorFilter(pagePaint.getColorFilter());
         bgPaint.setColor(bg);
+        buildShadows(bg);
         int flap = Themes.blend(bg, fg, 0.10f);
         flapPaint.setColorFilter(Themes.washed(theme, warmth, flap, 0.88f));
         rollBackPaint.setColorFilter(flapPaint.getColorFilter());
@@ -662,7 +668,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
         // Shadow the roll casts on the page underneath: full strength below the roll itself,
         // fading out beyond its outline.
-        float reach = clamp(d * 0.20f, 8 * dp, 56 * dp) + 0.5f * r;
+        float reach = clamp(d * 0.07f, 6 * dp, 20 * dp) + 0.35f * r;
         c.save();
         c.translate(mx, my);
         c.rotate(ang);
@@ -734,7 +740,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
         // Soft shadows just outside its free edges, each cut off where the sheet meets the roll.
         // They stop at the corner: overlapping past it would leave a dark square.
-        float es = clamp(d * 0.12f, 6 * dp, 40 * dp);
+        float es = clamp(d * 0.05f, 4 * dp, 16 * dp);
         setQuad(quad, w, 0, w + es, 0, w + es, h, w, h);
         if (toPath(pathB, poly, cut(quad, 4, -half, -1f, poly))) {
             shaderMatrix.setScale(es, 1f);
@@ -781,23 +787,24 @@ final class ReaderView extends View implements PdfEngine.Callback {
      * Light on the roll at angle a (0 where the sheet leaves the page, pi where it lies flat on
      * top): the face darkens as it turns away, the back comes out of shadow through a highlight.
      */
-    private static int rollShade(float a) {
-        float black, white = 0f;
+    private static int rollShade(float a, int rgb) {
+        float dark, white = 0f;
         if (a <= PI / 2f) {
+            // The face only deepens gently as it turns away; a hard dark rim reads as a stripe.
             float t = 1f - (float) Math.cos(a);
-            black = 0.24f * t * (float) Math.sqrt(t);
+            dark = 0.20f * t * t;
         } else {
             float t = (a - PI / 2f) / (PI / 2f);
-            if (t < 0.30f) {
-                black = 0.22f * (1f - t / 0.30f);
-            } else if (t < 0.75f) {
-                black = 0f;
-                white = 0.13f * (float) Math.sin(Math.PI * (t - 0.30f) / 0.45f);
+            if (t < 0.40f) {
+                dark = 0.20f * (1f - t / 0.40f) * (1f - t / 0.40f);
+            } else if (t < 0.80f) {
+                dark = 0f;
+                white = 0.10f * (float) Math.sin(Math.PI * (t - 0.40f) / 0.40f);
             } else {
-                black = 0.08f * (t - 0.75f) / 0.25f;
+                dark = 0.05f * (t - 0.80f) / 0.20f;
             }
         }
-        return white > 0f ? (Math.round(white * 255f) << 24) | 0xFFFFFF : Math.round(black * 255f) << 24;
+        return white > 0f ? (Math.round(white * 255f) << 24) | 0xFFFFFF : (Math.round(dark * 255f) << 24) | rgb;
     }
 
     private void fillPage(Canvas c, Path path, int screen) {

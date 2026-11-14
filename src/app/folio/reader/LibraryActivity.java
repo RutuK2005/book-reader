@@ -61,6 +61,27 @@ public class LibraryActivity extends Activity {
     private float dp;
     private boolean importing;
     private String filter = ALL;
+    private ScrollView scroll;
+    private int scrollSpeed;
+    /** Scrolls the page while a dragged book is held near the top or bottom edge. */
+    private final Runnable edgeScroller = new Runnable() {
+        @Override
+        public void run() {
+            if (scrollSpeed == 0 || scroll == null) return;
+            scroll.scrollBy(0, scrollSpeed);
+            scroll.postDelayed(this, 16);
+        }
+    };
+
+    /** screenY is where the dragged book is; a negative value stops the scrolling. */
+    private void edgeScroll(float screenY) {
+        int h = getResources().getDisplayMetrics().heightPixels, zone = d(130), was = scrollSpeed;
+        if (screenY < 0) scrollSpeed = 0;
+        else if (screenY < zone) scrollSpeed = -Math.round(d(4) + d(14) * (zone - screenY) / zone);
+        else if (screenY > h - zone) scrollSpeed = Math.round(d(4) + d(14) * (screenY - (h - zone)) / zone);
+        else scrollSpeed = 0;
+        if (was == 0 && scrollSpeed != 0 && scroll != null) scroll.post(edgeScroller);
+    }
 
     @Override
     protected void onCreate(Bundle state) {
@@ -132,7 +153,21 @@ public class LibraryActivity extends Activity {
             }
         }
 
-        ScrollView scroll = new ScrollView(this);
+        final int keepY = scroll == null ? 0 : scroll.getScrollY();
+        scrollSpeed = 0;
+        scroll = new ScrollView(this);
+        scroll.post(() -> scroll.scrollTo(0, keepY));
+        // Catches a dragged book held over the header or the gaps, where no book is underneath.
+        scroll.setOnDragListener((v, e) -> {
+            if (e.getAction() == DragEvent.ACTION_DRAG_LOCATION) {
+                int[] at = new int[2];
+                v.getLocationOnScreen(at);
+                edgeScroll(at[1] + e.getY());
+            } else if (e.getAction() == DragEvent.ACTION_DRAG_ENDED) {
+                edgeScroll(-1);
+            }
+            return e.getAction() != DragEvent.ACTION_DROP;
+        });
         scroll.setBackgroundColor(bg);
         scroll.setFillViewport(true);
         scroll.addView(page, new FrameLayout.LayoutParams(MATCH, WRAP));
@@ -363,11 +398,19 @@ public class LibraryActivity extends Activity {
             if (!(e.getLocalState() instanceof Library.Book)) return false;
             Library.Book moving = (Library.Book) e.getLocalState();
             switch (e.getAction()) {
+                case DragEvent.ACTION_DRAG_LOCATION:
+                    int[] at = new int[2];
+                    v.getLocationOnScreen(at);
+                    edgeScroll(at[1] + e.getY());
+                    break;
                 case DragEvent.ACTION_DRAG_ENTERED:
                     if (moving != b) v.setAlpha(0.4f);
                     break;
-                case DragEvent.ACTION_DRAG_EXITED:
                 case DragEvent.ACTION_DRAG_ENDED:
+                    edgeScroll(-1);
+                    v.setAlpha(1f);
+                    break;
+                case DragEvent.ACTION_DRAG_EXITED:
                     v.setAlpha(1f);
                     break;
                 case DragEvent.ACTION_DROP:
