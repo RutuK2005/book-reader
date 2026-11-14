@@ -1059,6 +1059,23 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         barBg.setCornerRadius(d(26));
         bar.setBackground(barBg);
         bar.setElevation(d(8));
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        final View[] dots = new View[ReaderView.MARK_COLORS.length];
+        for (int i = 0; i < dots.length; i++) {
+            final int index = i;
+            dots[i] = new View(mc);
+            dots[i].setContentDescription("Highlight colour " + (i + 1));
+            dots[i].setOnClickListener(v -> {
+                view.markColor = index;
+                prefs.edit().putInt("mark_color", index).apply();
+                styleDots(dots);
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(d(30), d(30));
+            lp.setMargins(d(7), 0, d(3), 0);
+            bar.addView(dots[i], lp);
+        }
+        view.markColor = Math.min(dots.length - 1, prefs.getInt("mark_color", 0));
+        styleDots(dots);
         bar.addView(barButton(mc, "Undo highlight", v -> {
             if (!view.undoMark()) toast("Nothing to undo. Tap a highlight to remove it.");
         }));
@@ -1099,6 +1116,16 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
 
         top.setVisibility(View.GONE);
         bottomPanel.setVisibility(View.GONE);
+    }
+
+    private void styleDots(View[] dots) {
+        for (int i = 0; i < dots.length; i++) {
+            GradientDrawable g = new GradientDrawable();
+            g.setShape(GradientDrawable.OVAL);
+            g.setColor(ReaderView.MARK_COLORS[i] | 0xFF000000);
+            g.setStroke(d(i == view.markColor ? 3 : 1), i == view.markColor ? 0xFFFFFFFF : 0xFF555555);
+            dots[i].setBackground(g);
+        }
     }
 
     private void selectTab(TextView[] tabs, View[] panels, int index) {
@@ -1232,23 +1259,24 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
 
     private void bookmarksDialog() {
         if (!ready) return;
-        if (book.bookmarks.isEmpty() && book.notes.isEmpty()) {
+        if (book.bookmarks.isEmpty() && book.notes.isEmpty() && book.highlights.isEmpty()) {
             toast("Nothing marked yet. Tap ☆ to bookmark this page, or add a note.");
             return;
         }
         // Bookmarks and notes share one list, in page order.
         java.util.TreeSet<Integer> marked = new java.util.TreeSet<>(book.bookmarks);
         marked.addAll(book.notes.keySet());
+        marked.addAll(book.highlights.keySet());
         final ArrayList<Integer> pages = new ArrayList<>(marked);
         String[] items = new String[pages.size()];
         for (int i = 0; i < items.length; i++) {
             int p = pages.get(i);
             String note = book.notes.get(p);
             if (note != null && note.length() > 60) note = note.substring(0, 60).trim() + "…";
-            items[i] = "Page " + (p + 1) + (book.bookmarks.contains(p) ? "  ★" : "") + (note == null ? "" : "\n" + note);
+            items[i] = "Page " + (p + 1) + (book.bookmarks.contains(p) ? "  ★" : "") + (book.highlights.containsKey(p) ? "  ·  highlighted" : "") + (note == null ? "" : "\n" + note);
         }
         present(new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle("Bookmarks and notes")
+                .setTitle("Bookmarks, notes and highlights")
                 .setItems(items, (dlg, which) -> {
                     view.goToPage(pages.get(which));
                     showMenu(false);

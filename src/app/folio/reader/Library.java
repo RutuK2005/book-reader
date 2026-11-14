@@ -54,6 +54,9 @@ final class Library {
         int samples;
         /** Total time spent reading this book. */
         long readSec;
+        /** True for books laid out from an EPUB or text file; textSize is what they were set in. */
+        boolean converted;
+        float textSize;
         /** Set once the "you finished it" moment has been shown. */
         boolean celebrated;
 
@@ -92,6 +95,11 @@ final class Library {
         return new File(ctx.getFilesDir(), "books/" + b.id + ".pdf");
     }
 
+    /** The original EPUB or text file of a converted book, kept so it can be laid out again. */
+    File source(Book b) {
+        return new File(ctx.getFilesDir(), "books/" + b.id + ".src");
+    }
+
     File cover(Book b) {
         return new File(ctx.getFilesDir(), "covers/" + b.id + ".jpg");
     }
@@ -117,6 +125,7 @@ final class Library {
     synchronized void remove(Book b) {
         books.remove(b);
         file(b).delete();
+        source(b).delete();
         cover(b).delete();
         save();
     }
@@ -243,6 +252,15 @@ final class Library {
                 f.delete();
                 return dup;
             }
+            if (!Convert.isPdf(f)) {
+                // Not a PDF: keep the original and lay it out into pages.
+                File src = source(b);
+                if (!f.renameTo(src)) throw new IOException("Couldn't store that file");
+                b.converted = true;
+                b.textSize = Convert.DEFAULT_SIZE;
+                String own = Convert.toPdf(src, name, f, b.textSize);
+                if (own != null && !own.isEmpty()) b.title = own;
+            }
             try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
                  PdfRenderer r = new PdfRenderer(pfd)) {
                 b.pages = r.getPageCount();
@@ -262,6 +280,7 @@ final class Library {
             }
         } catch (Exception e) {
             f.delete();
+            source(b).delete();
             cover(b).delete();
             throw e;
         }
@@ -270,6 +289,38 @@ final class Library {
             save();
         }
         return b;
+    }
+
+    /**
+     * Lays a converted book out again at a new text size. Page numbers change, so the place is
+     * kept as a fraction of the book and page-bound marks are dropped. Slow: call off the UI thread.
+     */
+    void reconvert(Book b, float size) throws Exception {
+        File tmp = new File(file(b).getPath() + ".new");
+        try {
+            Convert.toPdf(source(b), b.src, tmp, size);
+            int pages;
+            try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(tmp, ParcelFileDescriptor.MODE_READ_ONLY);
+                 PdfRenderer r = new PdfRenderer(pfd)) {
+                pages = r.getPageCount();
+            }
+            synchronized (this) {
+                if (!tmp.renameTo(file(b))) throw new IOException("Couldn't save the new layout");
+                b.page = b.pages > 0 ? Math.min(pages - 1, Math.round(b.page * (float) pages / b.pages)) : 0;
+                b.pages = pages;
+                b.textSize = size;
+                b.bookmarks.clear();
+                b.notes.clear();
+                b.highlights.clear();
+                b.cropDone = false;
+                b.cropEven = b.cropOdd = null;
+                b.secPerPage = 0;
+                b.samples = 0;
+                save();
+            }
+        } finally {
+            tmp.delete();
+        }
     }
 
     private synchronized Book findBySource(String name, long size) {
@@ -288,7 +339,7 @@ final class Library {
     /** A readable title from a file name: no download-site tags, separators turned into spaces. */
     private static String niceTitle(String name) {
         String t = name;
-        if (t.toLowerCase().endsWith(".pdf")) t = t.substring(0, t.length() - 4);
+        t = t.replaceAll("(?i)\\.(pdf|epub|txt)$", "");
         t = t.replaceAll("(?i)\\(?\\s*pdf\\s*drive(\\.com)?\\s*\\)?", " ");
         t = t.replaceAll("(?i)\\(?\\s*z-lib(\\.org)?\\s*\\)?", " ");
         t = t.replaceAll("(?i)_?ocean\\s*of\\s*pdf(\\.com)?_?", " ");
@@ -322,6 +373,7 @@ final class Library {
                 o.put("highlights", hl);
                 o.put("secPerPage", b.secPerPage).put("samples", b.samples);
                 o.put("readSec", b.readSec).put("celebrated", b.celebrated);
+                o.put("converted", b.converted).put("textSize", b.textSize);
                 arr.put(o);
             }
             JSONObject root = new JSONObject();
@@ -409,6 +461,8 @@ final class Library {
                 b.samples = o.optInt("samples");
                 b.readSec = o.optLong("readSec");
                 b.celebrated = o.optBoolean("celebrated");
+                b.converted = o.optBoolean("converted");
+                b.textSize = (float) o.optDouble("textSize", Convert.DEFAULT_SIZE);
                 if (!b.shelf.isEmpty() && !shelves.contains(b.shelf)) shelves.add(b.shelf);
                 if (file(b).exists()) books.add(b);
             }
@@ -424,9 +478,9 @@ final class Library {
     }
 
     private static float[] fromJson(JSONArray a) {
-        if (a == null || a.length() != 4) return null;
-        float[] f = new float[4];
-        for (int i = 0; i < 4; i++) f[i] = (float) a.optDouble(i, i < 2 ? 0 : 1);
+        if (a == null || a.length() < 4) return null;
+        float[] f = new float[a.length()];
+        for (int i = 0; i < f.length; i++) f[i] = (float) a.optDouble(i, i < 2 ? 0 : 1);
         return f;
     }
 }

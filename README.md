@@ -21,7 +21,9 @@ and pick your PDFs.
   fill themselves in.
 - Hold a book and drag it to rearrange.
 - Today's reading time, a daily goal and a streak, folded away until you tap them.
-- PDFs are copied into the app, so a book survives the original file being moved.
+- Opens PDF, EPUB and TXT. EPUB and text books are laid out into pages when added, and their
+  text size can be changed afterwards.
+- Books are copied into the app, so a book survives the original file being moved.
 
 **Reading**
 - Page turns: a paper curl that follows your finger, a slide, or none. Tap or swipe the edges, use
@@ -30,7 +32,7 @@ and pick your PDFs.
   Night can switch itself on from 9 pm to 6 am.
 - Crop margins so the text fills the screen; two-page spread in landscape; pinch or double-tap to zoom.
 - Reading ruler: dims the page except for a band you drag along, at a height you choose.
-- Highlights: drag over a passage to mark it; undo, or tap one to remove it.
+- Highlights in four colours: drag over a passage to mark it; undo, or tap one to remove it.
 - Bookmarks and page notes, go to page, and a page slider with a preview.
 - Dictionary: type a word to look it up (needs a connection).
 - Auto-turn for hands-free reading, and a sleep timer.

@@ -112,6 +112,9 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
     // Reading ruler and highlighter. Both are plain rectangles drawn with the page, so they cost
     // nothing while the page sits still.
+    static final int[] MARK_COLORS = {0x66FFD400, 0x6645C96A, 0x664A9EFF, 0x66FF6FA8};
+    /** Which of MARK_COLORS new highlights are drawn in. */
+    int markColor;
     boolean rulerOn, marking;
     /** Height of the ruler's clear band, in dp. */
     float rulerBand = 96f;
@@ -355,7 +358,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
         float from = dir > 0 ? w : -w;
         tx = from;
         ty = cy;
-        startSettle(from, cy, -from, cy, !straight, true, animMode == ANIM_SLIDE ? 300 : 560);
+        startSettle(from, cy, -from, cy, !straight, true, animMode == ANIM_SLIDE ? 430 : 820);
     }
 
     @Override
@@ -559,11 +562,13 @@ final class ReaderView extends View implements PdfEngine.Callback {
             float[] p = engine.placed.get(first + i);
             if (list == null || p == null) continue;
             for (float[] r : list) {
+                markPaint.setColor(MARK_COLORS[r.length > 4 ? Math.max(0, Math.min(MARK_COLORS.length - 1, (int) r[4])) : 0]);
                 c.drawRect(p[0] + (r[0] * p[7] - p[4]) * p[6], p[1] + (r[1] * p[8] - p[5]) * p[6],
                         p[0] + (r[2] * p[7] - p[4]) * p[6], p[1] + (r[3] * p[8] - p[5]) * p[6], markPaint);
             }
         }
         if (markMoved && screen == cur) {
+            markPaint.setColor(MARK_COLORS[markColor]);
             c.drawRect(Math.min(downX, markX), Math.min(downY, markY), Math.max(downX, markX), Math.max(downY, markY), markPaint);
         }
     }
@@ -577,7 +582,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
             float[] p = engine.placed.get(first + i);
             if (p == null || downX < p[0] || downX > p[0] + p[2]) continue;
             float[] f = {clamp(((l - p[0]) / p[6] + p[4]) / p[7], 0f, 1f), clamp(((t - p[1]) / p[6] + p[5]) / p[8], 0f, 1f),
-                    clamp(((r - p[0]) / p[6] + p[4]) / p[7], 0f, 1f), clamp(((b - p[1]) / p[6] + p[5]) / p[8], 0f, 1f)};
+                    clamp(((r - p[0]) / p[6] + p[4]) / p[7], 0f, 1f), clamp(((b - p[1]) / p[6] + p[5]) / p[8], 0f, 1f), markColor};
             java.util.ArrayList<float[]> list = book.highlights.get(first + i);
             if (list == null) book.highlights.put(first + i, list = new java.util.ArrayList<>());
             list.add(f);
@@ -1018,7 +1023,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
         else complete = vx > flingMin || (progress > 0.15f && vx > -flingMin);
         float endX = (tDir > 0) == complete ? -w : w;
         if (complete && listener != null) listener.onTurn();
-        startSettle(tx, ty, endX, cy, false, complete, (long) (140 + 260 * Math.abs(endX - tx) / (2f * w)));
+        startSettle(tx, ty, endX, cy, false, complete, (long) (200 + 400 * Math.abs(endX - tx) / (2f * w)));
     }
 
     private void startSettle(final float sx, final float sy, final float ex, final float ey,

@@ -139,7 +139,7 @@ public class LibraryActivity extends Activity {
         if (open && current != null) page.addView(continueCard(current), top(MATCH, WRAP, 14));
 
         if (all.isEmpty()) {
-            page.addView(message("Your library is empty.\n\nTap “Add books” and choose the PDFs you want to read. "
+            page.addView(message("Your library is empty.\n\nTap “Add books” and choose the books you want to read (PDF, EPUB or TXT). "
                     + "They are copied into MyBookSpace, so they stay here even if you move the originals."), top(MATCH, WRAP, 60));
         } else {
             page.addView(chips(all, shelves), top(MATCH, WRAP, 22));
@@ -493,7 +493,9 @@ public class LibraryActivity extends Activity {
     private void pick() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("application/pdf");
+        // Many file apps report an EPUB as a generic file, so the picker has to allow those too.
+        i.setType("*/*");
+        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/pdf", "application/epub+zip", "text/plain", "application/octet-stream"});
         i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         try {
             startActivityForResult(i, REQ_PICK);
@@ -541,11 +543,47 @@ public class LibraryActivity extends Activity {
     private void bookMenu(final Library.Book b) {
         new AlertDialog.Builder(this)
                 .setTitle(b.title)
-                .setItems(new String[]{"Move to shelf…", "Rename", "Remove from library"}, (dlg, which) -> {
+                .setItems(b.converted ? new String[]{"Move to shelf…", "Rename", "Remove from library", "Text size…"}
+                        : new String[]{"Move to shelf…", "Rename", "Remove from library"}, (dlg, which) -> {
                     if (which == 0) shelfPicker(b);
                     else if (which == 1) rename(b);
-                    else confirmRemove(b);
+                    else if (which == 2) confirmRemove(b);
+                    else textSize(b);
                 })
+                .show();
+    }
+
+    /** EPUB and text books are laid out into pages, so changing the text size lays them out again. */
+    private void textSize(final Library.Book b) {
+        int checked = 1;
+        for (int i = 0; i < Convert.SIZES.length; i++) if (Math.abs(Convert.SIZES[i] - b.textSize) < 0.3f) checked = i;
+        boolean marks = !b.bookmarks.isEmpty() || !b.notes.isEmpty() || !b.highlights.isEmpty();
+        new AlertDialog.Builder(this)
+                .setTitle(marks ? "Text size (this book's bookmarks, notes and highlights will be cleared)" : "Text size")
+                .setSingleChoiceItems(Convert.SIZE_NAMES, checked, (dlg, which) -> {
+                    dlg.dismiss();
+                    importing = true;
+                    if (busy != null) {
+                        busy.setText("Laying out the book…");
+                        busy.setVisibility(View.VISIBLE);
+                    }
+                    final float size = Convert.SIZES[which];
+                    new Thread(() -> {
+                        String error = null;
+                        try {
+                            lib.reconvert(b, size);
+                        } catch (Throwable t) {
+                            error = t.getMessage() == null ? "Couldn't change the text size" : t.getMessage();
+                        }
+                        final String err = error;
+                        runOnUiThread(() -> {
+                            importing = false;
+                            build();
+                            if (err != null) Toast.makeText(this, err, Toast.LENGTH_LONG).show();
+                        });
+                    }).start();
+                })
+                .setNegativeButton("Cancel", null)
                 .show();
     }
 
