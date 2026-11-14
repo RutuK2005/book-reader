@@ -8,7 +8,7 @@
         android:allowBackup="true"
         android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="Folio"
+        android:label="MyBookSpace"
         android:theme="@style/AppTheme">
 
         <activity

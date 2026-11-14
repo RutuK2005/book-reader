@@ -122,7 +122,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         @Override
         public void run() {
             if (autoSec <= 0 || !ready) return;
-            if (!menuVisible && sleepCover == null) view.turn(1, true);
+            if (!menuVisible && sleepCover == null && !view.marking && hasWindowFocus()) view.turn(1, true);
             handler.postDelayed(this, autoSec * 1000L);
         }
     };
@@ -160,7 +160,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         }
     }
 
-    /** "Open with Folio" from a file manager: add the PDF to the shelf, then read it. */
+    /** "Open with MyBookSpace" from a file manager: add the PDF to the shelf, then read it. */
     private void importAndOpen(final Uri uri) {
         new Thread(() -> {
             Library.Book b = null;
@@ -715,6 +715,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         view.menuOpen = show;
         if (show) refreshMenu();
         topBar.setVisibility(show ? View.VISIBLE : View.GONE);
+        markBar.setVisibility(view.marking && !show ? View.VISIBLE : View.GONE);
         bottomPanel.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
@@ -950,8 +951,8 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         });
         markBtn = pill(mc, v -> {
             view.marking = !view.marking;
-            markBar.setVisibility(view.marking ? View.VISIBLE : View.GONE);
             refreshPills();
+            markBar.setVisibility(View.GONE);
             if (view.marking) {
                 showMenu(false);
                 toast("Drag over a passage to highlight it. Tap a highlight to remove it.");

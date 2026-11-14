@@ -476,6 +476,18 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
     @Override
     protected void onDraw(Canvas c) {
+        drawContent(c);
+        if (rulerOn && layout != null && zoom == 1f) {
+            // Dim everything, page number included, except one band; drag up or down to move it.
+            // Drawn over the whole frame so it holds still while the page underneath turns.
+            float h = getHeight() - footerH, band = Math.min(rulerBand * dp, h);
+            float top = clamp(rulerY * h - band / 2f, 0f, h - band);
+            c.drawRect(0, 0, getWidth(), top, dimPaint);
+            c.drawRect(0, top + band, getWidth(), getHeight(), dimPaint);
+        }
+    }
+
+    private void drawContent(Canvas c) {
         // Every path below paints the whole view, so there is no background fill to pay for.
         if (layout == null) {
             c.drawColor(bg);
@@ -501,6 +513,11 @@ final class ReaderView extends View implements PdfEngine.Callback {
         }
         // The sharp render may lag behind the pan; draw it where it still lines up.
         if (zoomBmp != null && zbZ == zoom) c.drawBitmap(zoomBmp, zbX - panX, zbY - panY, pagePaint);
+        c.save();
+        c.translate(-panX, -panY);
+        c.scale(zoom, zoom);
+        drawMarks(c, cur);
+        c.restore();
     }
 
     private void drawPage(Canvas c, int screen) {
@@ -518,13 +535,6 @@ final class ReaderView extends View implements PdfEngine.Callback {
         if (noted(screen)) c.drawPath(notePath, notePaint);
         drawMarks(c, screen);
         drawFooter(c, screen);
-        if (rulerOn && screen == cur && tState == IDLE) {
-            // Dim everything, page number included, except one band; drag up or down to move it.
-            float h = getHeight() - footerH, band = Math.min(rulerBand * dp, h);
-            float top = clamp(rulerY * h - band / 2f, 0f, h - band);
-            c.drawRect(0, 0, getWidth(), top, dimPaint);
-            c.drawRect(0, top + band, getWidth(), getHeight(), dimPaint);
-        }
     }
 
     /** Removes the most recent highlight made in this sitting. */
@@ -1107,7 +1117,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
             swipeDir = 0;
             rulerMove = markMoved = false;
             removeCallbacks(riffle);
-            riffleDir = (zoom == 1f && !menuOpen) ? zoneOf(x) : 0;
+            riffleDir = (zoom == 1f && !menuOpen && !marking) ? zoneOf(x) : 0;
             if (riffleDir != 0) postDelayed(riffle, 500);
             if (vt == null) vt = VelocityTracker.obtain();
             else vt.clear();

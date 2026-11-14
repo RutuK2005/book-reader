@@ -135,7 +135,7 @@ public class LibraryActivity extends Activity {
 
         if (all.isEmpty()) {
             page.addView(message("Your library is empty.\n\nTap “Add books” and choose the PDFs you want to read. "
-                    + "They are copied into Folio, so they stay here even if you move the originals."), top(MATCH, WRAP, 60));
+                    + "They are copied into MyBookSpace, so they stay here even if you move the originals."), top(MATCH, WRAP, 60));
         } else {
             page.addView(chips(all, shelves), top(MATCH, WRAP, 22));
             ArrayList<Library.Book> shown = new ArrayList<>();
@@ -152,6 +152,11 @@ public class LibraryActivity extends Activity {
                 grid(page, shown);
             }
         }
+
+        TextView credit = text("MyBookSpace  ·  designed and built by Rutuparn K", 12, dim, false);
+        credit.setGravity(Gravity.CENTER);
+        credit.setOnClickListener(v -> about());
+        page.addView(credit, top(MATCH, WRAP, 44));
 
         final int keepY = scroll == null ? 0 : scroll.getScrollY();
         scrollSpeed = 0;
@@ -193,7 +198,8 @@ public class LibraryActivity extends Activity {
         date.setAllCaps(true);
         date.setLetterSpacing(0.08f);
         titles.addView(date);
-        titles.addView(text("Library", 30, fg, true));
+        titles.addView(text("MyBookSpace", 30, fg, true));
+        titles.addView(text("by Rutuparn K", 12, dim, false));
         head.addView(titles, new LinearLayout.LayoutParams(0, WRAP, 1f));
         TextView add = text("+  Add books", 15, Color.WHITE, false);
         add.setPadding(d(20), d(11), d(20), d(11));
@@ -359,9 +365,12 @@ public class LibraryActivity extends Activity {
         for (int i = 0; i < books.size(); i += cols) {
             LinearLayout row = new LinearLayout(this);
             for (int k = 0; k < cols; k++) {
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+                boolean filled = i + k < books.size();
+                // An empty slot gets a fixed height: a bare View asked to wrap takes all the room
+                // it is offered, which would stretch the row to the height of the screen.
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, filled ? WRAP : 1, 1f);
                 if (k > 0) lp.leftMargin = gap;
-                row.addView(i + k < books.size() ? cell(books.get(i + k)) : new View(this), lp);
+                row.addView(filled ? cell(books.get(i + k)) : new View(this), lp);
             }
             page.addView(row, top(MATCH, WRAP, i == 0 ? 12 : 22));
         }
@@ -600,6 +609,14 @@ public class LibraryActivity extends Activity {
                 .show();
     }
 
+    private void about() {
+        new AlertDialog.Builder(this)
+                .setTitle("MyBookSpace")
+                .setMessage("A small, fast PDF book reader.\n\nDesigned and built by Rutuparn K.\n\ngithub.com/RutuK2005/book-reader")
+                .setPositiveButton("Close", null)
+                .show();
+    }
+
     private void goalDialog() {
         final String[] items = new String[GOALS.length];
         int current = prefs.getInt(P.GOAL_MIN, 20), checked = -1;
@@ -633,7 +650,7 @@ public class LibraryActivity extends Activity {
     private void confirmRemove(final Library.Book b) {
         new AlertDialog.Builder(this)
                 .setTitle("Remove “" + b.title + "”?")
-                .setMessage("This deletes Folio's copy, your place, your bookmarks and notes. The original PDF is not touched.")
+                .setMessage("This deletes MyBookSpace's copy, your place, your bookmarks and notes. The original PDF is not touched.")
                 .setPositiveButton("Remove", (dlg, which) -> {
                     covers.remove(b.id);
                     lib.remove(b);

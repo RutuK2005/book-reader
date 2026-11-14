@@ -1,5 +1,5 @@
-# Builds Folio.apk without Gradle: aapt2 -> javac -> d8 -> zipalign -> apksigner.
-#   .\build.ps1                 build only  (output: build\Folio.apk)
+# Builds MyBookSpace.apk without Gradle: aapt2 -> javac -> d8 -> zipalign -> apksigner.
+#   .\build.ps1                 build only  (output: build\MyBookSpace.apk)
 #   .\build.ps1 -Install        build and install on the connected device
 #   .\build.ps1 -Install -Serial 10.0.0.5:5555
 param([switch]$Install, [string]$Serial)
@@ -28,7 +28,7 @@ New-Item -ItemType Directory -Force "$out\classes" | Out-Null
 Step "aapt2 compile" { & "$bt\aapt2.exe" compile --dir "$root\res" -o "$out\res.zip" }
 Step "aapt2 link" {
     & "$bt\aapt2.exe" link -o "$out\unaligned.apk" -I $androidJar --manifest "$root\AndroidManifest.xml" `
-        --min-sdk-version 26 --target-sdk-version 34 --version-code 1 --version-name 1.0 "$out\res.zip"
+        --min-sdk-version 26 --target-sdk-version 34 --version-code 2 --version-name 1.1 "$out\res.zip"
 }
 
 $sources = Get-ChildItem "$root\src" -Recurse -Filter *.java | ForEach-Object { $_.FullName }
@@ -50,12 +50,12 @@ if (-not (Test-Path $ks)) {
             -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Folio Debug" | Out-Null
     }
 }
-Step "apksigner" { & "$bt\apksigner.bat" sign --ks $ks --ks-pass pass:android --key-pass pass:android --out "$out\Folio.apk" "$out\aligned.apk" }
+Step "apksigner" { & "$bt\apksigner.bat" sign --ks $ks --ks-pass pass:android --key-pass pass:android --out "$out\MyBookSpace.apk" "$out\aligned.apk" }
 
-$size = [math]::Round((Get-Item "$out\Folio.apk").Length / 1KB)
-"Built $out\Folio.apk ($size KB)"
+$size = [math]::Round((Get-Item "$out\MyBookSpace.apk").Length / 1KB)
+"Built $out\MyBookSpace.apk ($size KB)"
 
 if ($Install) {
     $target = if ($Serial) { @("-s", $Serial) } else { @() }
-    Step "adb install" { & adb @target install -r "$out\Folio.apk" }
+    Step "adb install" { & adb @target install -r "$out\MyBookSpace.apk" }
 }

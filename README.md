@@ -1,39 +1,46 @@
-# Book Reader
+# MyBookSpace
+
+**Designed and built by Rutuparn K.**
 
 I wanted to read my PDF books on an old Galaxy Tab A the way you read on a Kindle, and nothing
-on Android felt right, so I made this. It shows up on the tablet as **Folio**.
+on Android felt right, so I made this.
 
-It is plain Java on Android's built-in `PdfRenderer`, with no libraries, so the APK is about 50 KB
+It is plain Java on Android's built-in `PdfRenderer`, with no libraries, so the APK is about 75 KB
 and it runs fine on a tablet with 2 GB of RAM.
 
 ## Install
 
-Download `Folio.apk` from the [Releases](../../releases) page, open it on your Android device and
-allow installing from that source when asked. Needs Android 8 or newer. Then tap **Add books** and
-pick your PDFs.
+Download `MyBookSpace.apk` from the [Releases](../../releases) page, open it on your Android device
+and allow installing from that source when asked. Needs Android 8 or newer. Then tap **Add books**
+and pick your PDFs.
 
-## Features
+## What it does
 
-- **Library** with covers and reading progress. PDFs are copied into the app, so a book survives
-  the original file being moved. "Open with Folio" from a file manager also adds the book.
-- **Page turns**: paper curl that follows your finger, slide, or none. Tap or swipe the screen
-  edges, or use the volume keys.
-- **Themes**: White, Paper, Sepia, Green, Gray, Night, plus a warmth slider. Themes are applied
-  when a page is drawn, so switching is instant.
-- **Crop margins**: finds the text block and zooms it to fill the screen.
-- **Two-page spread** in landscape, with the cover on its own.
-- **Zoom**: pinch or double-tap the middle; the visible area is re-rendered sharp.
-- Bookmarks, go-to-page, a page scrubber, remembered position per book.
-- Footer with page number, percent, a "time left" estimate from your reading speed, clock and battery.
-- In-app brightness, independent of the system setting.
+**Library**
+- Covers, reading progress, and your own shelves (Work, Study, anything). "Reading" and "Finished"
+  fill themselves in.
+- Hold a book and drag it to rearrange.
+- Today's reading time, a daily goal and a streak, folded away until you tap them.
+- PDFs are copied into the app, so a book survives the original file being moved.
 
-## Battery
+**Reading**
+- Page turns: a paper curl that follows your finger, a slide, or none. Tap or swipe the edges, use
+  the volume keys, or hold an edge to riffle through pages.
+- Themes: White, Paper, Sepia, Green, Gray, Night, with a warmth slider and in-app brightness.
+  Night can switch itself on from 9 pm to 6 am.
+- Crop margins so the text fills the screen; two-page spread in landscape; pinch or double-tap to zoom.
+- Reading ruler: dims the page except for a band you drag along, at a height you choose.
+- Highlights: drag over a passage to mark it; undo, or tap one to remove it.
+- Bookmarks and page notes, go to page, and a page slider with a preview.
+- Dictionary: type a word to look it up (needs a connection).
+- Auto-turn for hands-free reading, and a sleep timer.
+- Footer with page number, time left in the book, clock and battery.
 
-Nothing runs while a page is on screen: no timers, no animation, no background work. The next and
-previous pages are rendered ahead of time, so a turn only composites bitmaps. The screen is kept
-on for 10 minutes after the last touch, then the normal screen timeout applies.
-
-The Tab A has an LCD, so dark themes do not save power on it; lowering brightness does.
+**Battery**
+- Nothing runs while a page is on screen: no timers, no animation, no background work.
+- Extreme battery saver: no animation or sound, dim screen, normal screen timeout.
+- The tablet this was made for has an LCD, so dark themes do not save power on it; lower
+  brightness does.
 
 ## Build
 
@@ -41,29 +48,33 @@ Needs JDK 17 plus Android SDK `build-tools;34.0.0` and `platforms;android-34`. `
 for them in `%USERPROFILE%\android-toolchain` (override with `FOLIO_TOOLCHAIN`).
 
 ```powershell
-.\build.ps1                 # -> build\Folio.apk
+.\build.ps1                 # -> build\MyBookSpace.apk
 .\build.ps1 -Install        # build and install on the connected device
 ```
 
 The signing key is created on the first build as `folio-debug.keystore` beside the toolchain
-(override with `FOLIO_KEYSTORE`), outside the repo so every checkout signs with the same key. Keep
-it: Android only accepts an update signed with the same key, otherwise the app has to be
-uninstalled first, which deletes the library.
+(override with `FOLIO_KEYSTORE`). Keep it: Android only accepts an update signed with the same key,
+otherwise the app has to be uninstalled first, which deletes the library.
 
-`python tools/make_sample.py build/sample-book.pdf` writes a novel-shaped test PDF (needs reportlab).
-
-## Layout
+## Code
 
 | File | Role |
 |---|---|
-| `PdfEngine.java` | Worker thread around `PdfRenderer`: screen rendering, zoom tiles, margin detection |
-| `ReaderView.java` | The page surface: curl/slide drawing, gestures, zoom, footer |
+| `PdfEngine.java` | Worker thread around `PdfRenderer`: page rendering, zoom, margin detection |
+| `ReaderView.java` | The page: curl and slide drawing, gestures, zoom, ruler, highlights |
 | `ReaderActivity.java` | Reader screen and its settings panel |
-| `LibraryActivity.java` | Bookshelf |
-| `Library.java` | Book list, import, saved progress |
+| `LibraryActivity.java` | Home: shelves, stats, book grid |
+| `Library.java` | Books, shelves, saved progress, reading log |
 | `Themes.java` | Colour themes as draw-time colour filters |
+
+The app's internal package name is still `app.folio.reader`, from its first name, so that updates
+install over older versions.
 
 ## Limits
 
-`PdfRenderer` exposes pixels only, not text: there is no text search, text reflow, or table of
-contents, and password-protected PDFs cannot be opened.
+`PdfRenderer` gives pixels, not text, so there is no text search, text reflow or table of
+contents; highlights mark an area rather than words; and password-protected PDFs cannot be opened.
+
+---
+
+Made by Rutuparn K · [github.com/RutuK2005](https://github.com/RutuK2005)

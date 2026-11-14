@@ -1,4 +1,4 @@
-"""Generates a novel-shaped test PDF (6x9 in, cover, chapters, page numbers) for trying out Folio.
+"""Generates a novel-shaped test PDF (6x9 in, cover, chapters, page numbers) for trying out MyBookSpace.
 
     python tools/make_sample.py build/sample-book.pdf
 """
@@ -39,7 +39,7 @@ def cover(canvas, doc):
     canvas.setFont("Times-Bold", 34)
     canvas.drawCentredString(w / 2, h * 0.62, "The Quiet Harbour")
     canvas.setFont("Times-Italic", 15)
-    canvas.drawCentredString(w / 2, h * 0.55, "A sample book for Folio")
+    canvas.drawCentredString(w / 2, h * 0.55, "A sample book for MyBookSpace")
     canvas.setFont("Times-Roman", 13)
     canvas.drawCentredString(w / 2, h * 0.12, "Test Edition")
 
