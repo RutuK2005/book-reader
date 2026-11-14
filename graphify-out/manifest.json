@@ -1,0 +1,80 @@
+{
+  "build.ps1": {
+    "mtime": 1794671248.5124724,
+    "seen": 1794686340.3099754,
+    "ast_hash": "62bfd7840f634c82c725006b0b4130f8",
+    "semantic_hash": "62bfd7840f634c82c725006b0b4130f8"
+  },
+  "src/app/folio/reader/ConfettiView.java": {
+    "mtime": 1794661806.0761275,
+    "seen": 1794686340.3099794,
+    "ast_hash": "1a01d9dc942a525b8116e1092ffee4ae",
+    "semantic_hash": "1a01d9dc942a525b8116e1092ffee4ae"
+  },
+  "src/app/folio/reader/Convert.java": {
+    "mtime": 1794684421.8143387,
+    "seen": 1794686340.3099809,
+    "ast_hash": "c45d0b0c67bd7c8c69ed3a0ca0d8d0d1",
+    "semantic_hash": "c45d0b0c67bd7c8c69ed3a0ca0d8d0d1"
+  },
+  "src/app/folio/reader/Library.java": {
+    "mtime": 1794684421.8568482,
+    "seen": 1794686340.309982,
+    "ast_hash": "66162b84c994d56a8f22c86abca7f589",
+    "semantic_hash": "66162b84c994d56a8f22c86abca7f589"
+  },
+  "src/app/folio/reader/LibraryActivity.java": {
+    "mtime": 1794685821.2622502,
+    "seen": 1794686340.3099828,
+    "ast_hash": "f3e61d284b670be40d909d25bfa98323",
+    "semantic_hash": "f3e61d284b670be40d909d25bfa98323"
+  },
+  "src/app/folio/reader/P.java": {
+    "mtime": 1794669695.836904,
+    "seen": 1794686340.3099837,
+    "ast_hash": "cd88938ee42482c781c759cf366a2da4",
+    "semantic_hash": "cd88938ee42482c781c759cf366a2da4"
+  },
+  "src/app/folio/reader/PageSound.java": {
+    "mtime": 1794661452.3185108,
+    "seen": 1794686340.3099847,
+    "ast_hash": "63dbb1ef4df853b60929f840e9a8fe52",
+    "semantic_hash": "63dbb1ef4df853b60929f840e9a8fe52"
+  },
+  "src/app/folio/reader/PdfEngine.java": {
+    "mtime": 1794668368.2347827,
+    "seen": 1794686340.3099856,
+    "ast_hash": "0ec04b53a5fed8afc99a11812f3c6d67",
+    "semantic_hash": "0ec04b53a5fed8afc99a11812f3c6d67"
+  },
+  "src/app/folio/reader/ReaderActivity.java": {
+    "mtime": 1794684985.1173077,
+    "seen": 1794686340.3099866,
+    "ast_hash": "f21c36f275f13604f7300a2835c71a05",
+    "semantic_hash": "f21c36f275f13604f7300a2835c71a05"
+  },
+  "src/app/folio/reader/ReaderView.java": {
+    "mtime": 1794681657.2041147,
+    "seen": 1794686340.3099875,
+    "ast_hash": "63ac022e33a0bd3251ba99bef84a426e",
+    "semantic_hash": "63ac022e33a0bd3251ba99bef84a426e"
+  },
+  "src/app/folio/reader/Themes.java": {
+    "mtime": 1794569140.459967,
+    "seen": 1794686340.3099885,
+    "ast_hash": "d8f8be5208dedcb6d6fe101b7d67dc75",
+    "semantic_hash": "d8f8be5208dedcb6d6fe101b7d67dc75"
+  },
+  "tools/make_sample.py": {
+    "mtime": 1794671248.5124724,
+    "seen": 1794686340.3099897,
+    "ast_hash": "0c9940fd8a16b1f318447fb4e48701b2",
+    "semantic_hash": "0c9940fd8a16b1f318447fb4e48701b2"
+  },
+  "README.md": {
+    "mtime": 1794684985.1183083,
+    "seen": 1794686340.3099906,
+    "ast_hash": "0794d095f0fb88fa830abe70b813db9b",
+    "semantic_hash": "0794d095f0fb88fa830abe70b813db9b"
+  }
+}
