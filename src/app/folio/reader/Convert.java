@@ -79,10 +79,13 @@ final class Convert {
 
             // The manifest names every file; the spine lists the chapters in reading order.
             HashMap<String, String> files = new HashMap<>();
+            String coverHref = null;
             Matcher item = Pattern.compile("<item\\b[^>]*>").matcher(opf);
             while (item.find()) {
                 String id = attr(item.group(), "id"), href = attr(item.group(), "href");
                 if (id != null && href != null) files.put(id, href);
+                String props = attr(item.group(), "properties");
+                if (href != null && props != null && props.contains("cover-image")) coverHref = href;
             }
             ArrayList<String> chapters = new ArrayList<>();
             Matcher ref = Pattern.compile("<itemref\\b[^>]*>").matcher(opf);
@@ -95,6 +98,22 @@ final class Convert {
             if (t.find()) title = Html.fromHtml(t.group(1), Html.FROM_HTML_MODE_LEGACY).toString().trim();
 
             Pages pages = new Pages(out, textSize);
+            // Many EPUBs name their cover picture in the metadata instead of putting it on the
+            // first page. If the first page has no picture of its own, the cover goes in front.
+            Matcher meta = Pattern.compile("<meta\\b[^>]*>").matcher(opf);
+            while (coverHref == null && meta.find()) {
+                if ("cover".equals(attr(meta.group(), "name"))) coverHref = files.get(attr(meta.group(), "content"));
+            }
+            if (coverHref != null && !chapters.isEmpty()) {
+                String first = read(zip, chapters.get(0));
+                boolean hasPicture = first != null && Pattern.compile("(?i)<(img|image)\\b").matcher(first).find();
+                ZipEntry entry = zip.getEntry(resolve(base, coverHref));
+                if (!hasPicture && entry != null) {
+                    byte[] data = readAll(zip.getInputStream(entry));
+                    Bitmap cover = BitmapFactory.decodeByteArray(data, 0, data.length);
+                    if (cover != null) pages.picture(cover);
+                }
+            }
             for (final String path : chapters) {
                 String html = read(zip, path);
                 if (html == null) continue;
@@ -189,6 +208,15 @@ final class Convert {
             paint.setTextSize(textSize);
             paint.setTypeface(Typeface.SERIF);
             paint.setColor(Color.BLACK);
+        }
+
+        /** A page that is one picture, as large as fits. */
+        void picture(Bitmap b) {
+            PdfDocument.Page page = doc.startPage(new PdfDocument.PageInfo.Builder((int) PAGE_W, (int) PAGE_H, ++count).create());
+            float sc = Math.min(PAGE_W / b.getWidth(), PAGE_H / b.getHeight());
+            float w = b.getWidth() * sc, h = b.getHeight() * sc, x = (PAGE_W - w) / 2f, y = (PAGE_H - h) / 2f;
+            page.getCanvas().drawBitmap(b, null, new android.graphics.RectF(x, y, x + w, y + h), new Paint(Paint.FILTER_BITMAP_FLAG));
+            doc.finishPage(page);
         }
 
         /** Each chapter starts on a fresh page. */

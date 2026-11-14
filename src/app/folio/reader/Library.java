@@ -54,6 +54,15 @@ final class Library {
         int samples;
         /** Total time spent reading this book. */
         long readSec;
+        /** Id of a second version of this book merged under it (say its EPUB), or "". */
+        String partner = "";
+        /** True for a version tucked under another book; it is not shown on its own. */
+        boolean hidden;
+
+        String kind() {
+            return !converted ? "PDF" : src.toLowerCase().endsWith(".txt") ? "Text" : "EPUB";
+        }
+
         /** True for books laid out from an EPUB or text file; textSize is what they were set in. */
         boolean converted;
         float textSize;
@@ -106,7 +115,47 @@ final class Library {
 
     /** The books in the order the reader has arranged them; new books go to the front. */
     synchronized ArrayList<Book> list() {
+        ArrayList<Book> out = new ArrayList<>();
+        for (Book b : books) if (!b.hidden) out.add(b);
+        return out;
+    }
+
+    /** Every book, including versions merged under another. */
+    synchronized ArrayList<Book> all() {
         return new ArrayList<>(books);
+    }
+
+    /**
+     * Makes two books one entry with two versions. The PDF stays on show, since a PDF usually has
+     * the better cover; otherwise the book that was dropped onto does. Returns false if either
+     * already has a second version.
+     */
+    synchronized boolean merge(Book dragged, Book target) {
+        if (dragged == target || dragged.hidden || target.hidden || !dragged.partner.isEmpty() || !target.partner.isEmpty()) return false;
+        Book shown = !dragged.converted && target.converted ? dragged : target;
+        Book tucked = shown == target ? dragged : target;
+        if (shown == dragged) {
+            // Keep the entry where the reader dropped it.
+            books.remove(dragged);
+            books.add(books.indexOf(target), dragged);
+        }
+        shown.partner = tucked.id;
+        tucked.hidden = true;
+        if (shown.shelf.isEmpty()) shown.shelf = tucked.shelf;
+        save();
+        return true;
+    }
+
+    synchronized void unmerge(Book b) {
+        Book other = find(b.partner);
+        b.partner = "";
+        if (other != null) {
+            other.hidden = false;
+            other.shelf = b.shelf;
+            books.remove(other);
+            books.add(books.indexOf(b) + 1, other);
+        }
+        save();
     }
 
     /** Moves a book to where another one sits; the books in between shift along. */
@@ -123,6 +172,8 @@ final class Library {
     }
 
     synchronized void remove(Book b) {
+        // Removing one version leaves the other in the library on its own.
+        if (!b.partner.isEmpty()) unmerge(b);
         books.remove(b);
         file(b).delete();
         source(b).delete();
@@ -327,6 +378,19 @@ final class Library {
                 b.highlights.clear();
                 b.pages = pages;
                 b.textSize = size;
+                try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file(b), ParcelFileDescriptor.MODE_READ_ONLY);
+                     PdfRenderer r = new PdfRenderer(pfd); PdfRenderer.Page p = r.openPage(0)) {
+                    int w = 420, h = Math.max(1, Math.round(w * p.getHeight() / (float) p.getWidth()));
+                    Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                    bmp.eraseColor(Color.WHITE);
+                    p.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                    try (OutputStream out = new FileOutputStream(cover(b))) {
+                        bmp.compress(Bitmap.CompressFormat.JPEG, 88, out);
+                    }
+                    bmp.recycle();
+                } catch (Exception ignored) {
+                    // The old cover picture stays.
+                }
                 b.cropDone = true;
                 b.cropEven = b.cropOdd = null;
                 b.secPerPage = 0;
@@ -389,6 +453,7 @@ final class Library {
                 o.put("secPerPage", b.secPerPage).put("samples", b.samples);
                 o.put("readSec", b.readSec).put("celebrated", b.celebrated);
                 o.put("converted", b.converted).put("textSize", b.textSize);
+                o.put("partner", b.partner).put("hidden", b.hidden);
                 arr.put(o);
             }
             JSONObject root = new JSONObject();
@@ -477,9 +542,19 @@ final class Library {
                 b.readSec = o.optLong("readSec");
                 b.celebrated = o.optBoolean("celebrated");
                 b.converted = o.optBoolean("converted");
+                b.partner = o.optString("partner", "");
+                b.hidden = o.optBoolean("hidden");
                 b.textSize = (float) o.optDouble("textSize", Convert.DEFAULT_SIZE);
                 if (!b.shelf.isEmpty() && !shelves.contains(b.shelf)) shelves.add(b.shelf);
                 if (file(b).exists()) books.add(b);
+            }
+            for (Book b : books) {
+                if (!b.partner.isEmpty() && find(b.partner) == null) b.partner = "";
+            }
+            for (Book b : books) {
+                boolean owned = false;
+                for (Book o : books) owned |= o.partner.equals(b.id);
+                if (b.hidden && !owned) b.hidden = false;
             }
         } catch (Exception ignored) {
             // A corrupt index just means an empty shelf; the PDFs can be re-added.

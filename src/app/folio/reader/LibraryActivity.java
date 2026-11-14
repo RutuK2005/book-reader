@@ -96,6 +96,7 @@ public class LibraryActivity extends Activity {
     protected void onResume() {
         super.onResume();
         // Rebuilt on every return so the page follows the reading theme and shows new progress.
+        covers.clear();
         build();
     }
 
@@ -133,7 +134,7 @@ public class LibraryActivity extends Activity {
         if (open) page.addView(statsCard(), top(MATCH, WRAP, 10));
 
         Library.Book current = null;
-        for (Library.Book b : all) {
+        for (Library.Book b : lib.all()) {
             if (b.started() && !b.finished() && (current == null || b.opened > current.opened)) current = b;
         }
         if (open && current != null) page.addView(continueCard(current), top(MATCH, WRAP, 14));
@@ -409,6 +410,7 @@ public class LibraryActivity extends Activity {
         title.setEllipsize(TextUtils.TruncateAt.END);
         c.addView(title, top(MATCH, WRAP, 8));
         String sub = b.finished() ? "Finished" : b.started() ? pct + "% read" : b.pages + " pages";
+        if (!b.partner.isEmpty()) sub += "  ·  2 versions";
         if (!b.shelf.isEmpty() && !filter.equals(b.shelf)) sub += "  ·  " + b.shelf;
         TextView s = text(sub, 12, dim, false);
         s.setMaxLines(2);
@@ -419,8 +421,9 @@ public class LibraryActivity extends Activity {
             title.setVisibility(View.GONE);
             s.setVisibility(View.GONE);
         }
-        c.setOnClickListener(v -> openBook(b));
-        // Hold a book and drag it onto another to move it there. Letting go where it started
+        c.setOnClickListener(v -> chooseVersion(b));
+        // Hold a book and drag it onto the edge of another to move it there, or onto the middle
+        // of its cover to merge the two as versions of one book. Letting go where it started
         // opens its menu instead.
         c.setOnLongClickListener(v -> {
             v.startDragAndDrop(null, new View.DragShadowBuilder(v), b, 0);
@@ -449,6 +452,8 @@ public class LibraryActivity extends Activity {
                     v.setAlpha(1f);
                     if (moving == b) {
                         bookMenu(b);
+                    } else if (e.getX() > v.getWidth() * 0.25f && e.getX() < v.getWidth() * 0.75f) {
+                        confirmMerge(moving, b);
                     } else {
                         lib.move(moving, b);
                         build();
@@ -508,6 +513,43 @@ public class LibraryActivity extends Activity {
         startActivity(new Intent(this, ReaderActivity.class).putExtra(ReaderActivity.EXTRA_ID, b.id));
     }
 
+    /** A merged book asks which version to open; any other book just opens. */
+    private void chooseVersion(final Library.Book b) {
+        final Library.Book other = b.partner.isEmpty() ? null : lib.find(b.partner);
+        if (other == null) {
+            openBook(b);
+            return;
+        }
+        final Library.Book[] versions = {b, other};
+        String[] items = new String[2];
+        for (int i = 0; i < 2; i++) {
+            Library.Book v = versions[i];
+            items[i] = v.kind() + "   ·   " + (v.started() ? "page " + (v.page + 1) + " of " + v.pages : v.pages + " pages");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(b.title)
+                .setItems(items, (dlg, which) -> openBook(versions[which]))
+                .show();
+    }
+
+    private void confirmMerge(final Library.Book dragged, final Library.Book target) {
+        new AlertDialog.Builder(this)
+                .setTitle("Merge these two?")
+                .setMessage("“" + dragged.title + "” and “" + target.title + "” become one book with two versions. "
+                        + "Tapping it asks which to open. You can separate them again from the book's menu.")
+                .setPositiveButton("Merge", (dlg, which) -> {
+                    if (!lib.merge(dragged, target)) {
+                        Toast.makeText(this, "One of these already has a second version", Toast.LENGTH_LONG).show();
+                    }
+                    build();
+                })
+                .setNegativeButton("Just move it", (dlg, which) -> {
+                    lib.move(dragged, target);
+                    build();
+                })
+                .show();
+    }
+
     private void pick() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
@@ -561,10 +603,15 @@ public class LibraryActivity extends Activity {
     private void bookMenu(final Library.Book b) {
         new AlertDialog.Builder(this)
                 .setTitle(b.title)
-                .setItems(new String[]{"Move to shelf…", "Rename", "Remove from library"}, (dlg, which) -> {
+                .setItems(b.partner.isEmpty() ? new String[]{"Move to shelf…", "Rename", "Remove from library"}
+                        : new String[]{"Move to shelf…", "Rename", "Remove from library", "Separate the two versions"}, (dlg, which) -> {
                     if (which == 0) shelfPicker(b);
                     else if (which == 1) rename(b);
-                    else confirmRemove(b);
+                    else if (which == 2) confirmRemove(b);
+                    else {
+                        lib.unmerge(b);
+                        build();
+                    }
                 })
                 .show();
     }
