@@ -39,9 +39,8 @@ import java.util.zip.ZipFile;
 final class Convert {
     /** Page size and margins in points: a 6 x 9 inch book page. */
     private static final float PAGE_W = 432, PAGE_H = 648, MARGIN_X = 38, MARGIN_Y = 46;
-    static final float[] SIZES = {10.5f, 12f, 13.5f, 15.5f, 18f};
-    static final String[] SIZE_NAMES = {"Small", "Medium", "Large", "Extra large", "Huge"};
-    static final float DEFAULT_SIZE = 12f;
+    static final float[] SIZES = {9.5f, 10.5f, 11.5f, 12.5f, 13.5f, 15f, 16.5f, 18.5f, 21f};
+    static final float DEFAULT_SIZE = 12.5f;
 
     static boolean isPdf(File f) {
         return startsWith(f, '%', 'P', 'D', 'F');

@@ -84,7 +84,8 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     private long sleepAt;
     private View sleepCover;
     private TextView autoBtn, sleepBtn, noteBtn, rulerBtn, markBtn, dictBtn;
-    private View markBar;
+    private View markBar, textRow;
+    private TextView textLabel;
 
     // Preview of the page the slider is on.
     private LinearLayout thumbBox;
@@ -225,6 +226,8 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         if (isFinishing() || isDestroyed()) return;
         ready = true;
         book.opened = System.currentTimeMillis();
+        textRow.setVisibility(book.converted ? View.VISIBLE : View.GONE);
+        textLabel.setText(sizeIndex() + 1 + " of " + Convert.SIZES.length);
         pageSeek.setMax(Math.max(1, book.pages - 1));
         view.setBook(engine, book, book.pages, prefs.getBoolean(P.CROP, true), prefs.getBoolean(P.DUAL, true));
         lastTurnAt = SystemClock.elapsedRealtime();
@@ -665,6 +668,59 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         }).start();
     }
 
+    // ---------------------------------------------------------------- text size
+
+    private int sizeIndex() {
+        int at = 0;
+        for (int i = 1; i < Convert.SIZES.length; i++) {
+            if (Math.abs(Convert.SIZES[i] - book.textSize) < Math.abs(Convert.SIZES[at] - book.textSize)) at = i;
+        }
+        return at;
+    }
+
+    /**
+     * Sets the book again one size up or down, then reopens it at the same point. The reader is
+     * built on fixed pages, so this re-lays the whole book; it takes a moment on a long one.
+     */
+    private void changeTextSize(int step) {
+        if (!ready || !book.converted) return;
+        int at = sizeIndex();
+        final int to = Math.max(0, Math.min(Convert.SIZES.length - 1, at + step));
+        if (to == at) {
+            toast(step > 0 ? "That is the largest size" : "That is the smallest size");
+            return;
+        }
+        final boolean hadHighlights = !book.highlights.isEmpty();
+        ready = false;
+        book.page = view.getPage();
+        flushReadingTime();
+        final TextView wait = label(this, "Setting the book in the new size…", 17, 0xFFEEEEEE);
+        wait.setGravity(Gravity.CENTER);
+        wait.setBackgroundColor(0xD9000000);
+        wait.setClickable(true);
+        root.addView(wait, new FrameLayout.LayoutParams(MATCH, MATCH));
+        view.detach();
+        final PdfEngine old = engine;
+        engine = null;
+        if (old != null) old.close();
+        new Thread(() -> {
+            String error = null;
+            try {
+                lib.reconvert(book, Convert.SIZES[to]);
+            } catch (Throwable t) {
+                error = t.getMessage() == null ? "Couldn't change the text size" : t.getMessage();
+            }
+            final String err = error;
+            runOnUiThread(() -> {
+                root.removeView(wait);
+                if (isFinishing() || isDestroyed()) return;
+                if (err != null) toast(err);
+                else if (hadHighlights) toast("Highlights in this book were cleared; bookmarks and notes were kept");
+                open(book);
+            });
+        }).start();
+    }
+
     // ---------------------------------------------------------------- notes
 
     /** The page on screen that has a note, or -1. */
@@ -858,6 +914,25 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             swatches[i] = sw;
         }
         display.addView(themes, rowParams(10));
+
+        // Text size, for books laid out from an EPUB or text file. Shown once such a book is open.
+        LinearLayout sizes = row(mc);
+        sizes.addView(label(mc, "Text size", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
+        TextView smaller = pill(mc, v -> changeTextSize(-1));
+        smaller.setText("A  −");
+        stylePill(smaller, false);
+        TextView larger = pill(mc, v -> changeTextSize(1));
+        larger.setText("A  +");
+        larger.setTextSize(17);
+        stylePill(larger, false);
+        textLabel = label(mc, "", 14, TEXT);
+        textLabel.setGravity(Gravity.CENTER);
+        sizes.addView(smaller, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        sizes.addView(textLabel, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        sizes.addView(larger, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        sizes.setVisibility(View.GONE);
+        display.addView(sizes, rowParams(16));
+        textRow = sizes;
 
         LinearLayout turn = row(mc);
         turn.addView(label(mc, "Page turn", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));

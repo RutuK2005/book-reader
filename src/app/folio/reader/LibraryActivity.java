@@ -561,47 +561,11 @@ public class LibraryActivity extends Activity {
     private void bookMenu(final Library.Book b) {
         new AlertDialog.Builder(this)
                 .setTitle(b.title)
-                .setItems(b.converted ? new String[]{"Move to shelf…", "Rename", "Remove from library", "Text size…"}
-                        : new String[]{"Move to shelf…", "Rename", "Remove from library"}, (dlg, which) -> {
+                .setItems(new String[]{"Move to shelf…", "Rename", "Remove from library"}, (dlg, which) -> {
                     if (which == 0) shelfPicker(b);
                     else if (which == 1) rename(b);
-                    else if (which == 2) confirmRemove(b);
-                    else textSize(b);
+                    else confirmRemove(b);
                 })
-                .show();
-    }
-
-    /** EPUB and text books are laid out into pages, so changing the text size lays them out again. */
-    private void textSize(final Library.Book b) {
-        int checked = 1;
-        for (int i = 0; i < Convert.SIZES.length; i++) if (Math.abs(Convert.SIZES[i] - b.textSize) < 0.3f) checked = i;
-        boolean marks = !b.bookmarks.isEmpty() || !b.notes.isEmpty() || !b.highlights.isEmpty();
-        new AlertDialog.Builder(this)
-                .setTitle(marks ? "Text size (this book's bookmarks, notes and highlights will be cleared)" : "Text size")
-                .setSingleChoiceItems(Convert.SIZE_NAMES, checked, (dlg, which) -> {
-                    dlg.dismiss();
-                    importing = true;
-                    if (busy != null) {
-                        busy.setText("Laying out the book…");
-                        busy.setVisibility(View.VISIBLE);
-                    }
-                    final float size = Convert.SIZES[which];
-                    new Thread(() -> {
-                        String error = null;
-                        try {
-                            lib.reconvert(b, size);
-                        } catch (Throwable t) {
-                            error = t.getMessage() == null ? "Couldn't change the text size" : t.getMessage();
-                        }
-                        final String err = error;
-                        runOnUiThread(() -> {
-                            importing = false;
-                            build();
-                            if (err != null) Toast.makeText(this, err, Toast.LENGTH_LONG).show();
-                        });
-                    }).start();
-                })
-                .setNegativeButton("Cancel", null)
                 .show();
     }
 

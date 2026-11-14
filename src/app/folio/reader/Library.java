@@ -293,10 +293,7 @@ final class Library {
         return b;
     }
 
-    /**
-     * Lays a converted book out again at a new text size. Page numbers change, so the place is
-     * kept as a fraction of the book and page-bound marks are dropped. Slow: call off the UI thread.
-     */
+    /** Lays a converted book out again at a new text size. Slow: call off the UI thread. */
     void reconvert(Book b, float size) throws Exception {
         File tmp = new File(file(b).getPath() + ".new");
         try {
@@ -308,12 +305,28 @@ final class Library {
             }
             synchronized (this) {
                 if (!tmp.renameTo(file(b))) throw new IOException("Couldn't save the new layout");
-                b.page = b.pages > 0 ? Math.min(pages - 1, Math.round(b.page * (float) pages / b.pages)) : 0;
+                // Page numbers change, so everything tied to a page moves to the same point in
+                // the book. Highlights mark an area of a page and cannot be carried over.
+                float k = b.pages > 0 ? pages / (float) b.pages : 1f;
+                b.page = Math.min(pages - 1, Math.round(b.page * k));
+                ArrayList<Integer> marks = new ArrayList<>();
+                for (int p : b.bookmarks) {
+                    int q = Math.min(pages - 1, Math.round(p * k));
+                    if (!marks.contains(q)) marks.add(q);
+                }
+                b.bookmarks.clear();
+                b.bookmarks.addAll(marks);
+                TreeMap<Integer, String> notes = new TreeMap<>();
+                for (Map.Entry<Integer, String> e : b.notes.entrySet()) {
+                    int q = Math.min(pages - 1, Math.round(e.getKey() * k));
+                    String had = notes.get(q);
+                    notes.put(q, had == null ? e.getValue() : had + "\n" + e.getValue());
+                }
+                b.notes.clear();
+                b.notes.putAll(notes);
+                b.highlights.clear();
                 b.pages = pages;
                 b.textSize = size;
-                b.bookmarks.clear();
-                b.notes.clear();
-                b.highlights.clear();
                 b.cropDone = true;
                 b.cropEven = b.cropOdd = null;
                 b.secPerPage = 0;
