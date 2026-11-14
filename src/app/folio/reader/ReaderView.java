@@ -948,13 +948,16 @@ final class ReaderView extends View implements PdfEngine.Callback {
             straight = true;
             cy = downY;
             dragArc = false;
-        } else {
-            // A drag from a corner follows the finger. From the side of the page (and when
-            // turning back) the bottom corner leads in a shallow arc, as a tapped turn does:
-            // a dead-vertical fold looks like a sliding panel, not paper.
+        } else if (dir > 0 && (downY < 0.22f * h || downY > 0.78f * h)) {
+            // Started in a corner zone: that corner is picked up and goes where the finger goes.
             straight = false;
-            cy = dir > 0 && downY < 0.38f * h ? 0 : h;
-            dragArc = dir < 0 || (downY >= 0.38f * h && downY <= 0.62f * h);
+            cy = downY < 0.5f * h ? 0 : h;
+            dragArc = false;
+        } else {
+            // Anywhere else the page folds straight, level with the finger.
+            straight = true;
+            cy = downY;
+            dragArc = false;
         }
         tx = dir > 0 ? w : -w;
         ty = cy;
@@ -963,11 +966,12 @@ final class ReaderView extends View implements PdfEngine.Callback {
     private void updateDrag(float x, float y) {
         float w = getWidth();
         if (tDir > 0) {
-            // Scaled so that a drag starting at the screen edge keeps the crease under the finger.
-            tx = w - (downX - x) * 2f * w / Math.max(downX, 0.35f * w);
+            // The page's edge (or its corner) moves exactly as far as the finger has moved.
+            tx = w + (x - downX);
             ty = straight ? cy : cy + (y - downY);
         } else {
-            tx = -w + (x - downX) * 2f * w / Math.max(w - downX, 0.35f * w);
+            // Turning back, the fold itself travels with the finger.
+            tx = -w + 2f * (x - downX);
             ty = cy;
         }
         if (dragArc) {
@@ -1000,8 +1004,8 @@ final class ReaderView extends View implements PdfEngine.Callback {
         float progress = tDir > 0 ? (w - tx) / (2f * w) : (tx + w) / (2f * w);
         boolean complete;
         if (cancelled) complete = false;
-        else if (tDir > 0) complete = vx < -flingMin || (progress > 0.33f && vx < flingMin);
-        else complete = vx > flingMin || (progress > 0.33f && vx > -flingMin);
+        else if (tDir > 0) complete = vx < -flingMin || (progress > 0.15f && vx < flingMin);
+        else complete = vx > flingMin || (progress > 0.15f && vx > -flingMin);
         float endX = (tDir > 0) == complete ? -w : w;
         if (complete && listener != null) listener.onTurn();
         startSettle(tx, ty, endX, cy, false, complete, (long) (140 + 260 * Math.abs(endX - tx) / (2f * w)));
