@@ -113,6 +113,9 @@ final class ReaderView extends View implements PdfEngine.Callback {
     // Reading ruler and highlighter. Both are plain rectangles drawn with the page, so they cost
     // nothing while the page sits still.
     boolean rulerOn, marking;
+    /** Height of the ruler's clear band, in dp. */
+    float rulerBand = 96f;
+    private final java.util.ArrayList<Object[]> markLog = new java.util.ArrayList<>();
     private float rulerY = 0.4f, markX, markY;
     private boolean rulerMove, markMoved;
     private final Paint dimPaint = new Paint(), markPaint = new Paint();
@@ -120,7 +123,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
     // Page turn state.
     private int tState = IDLE, tDir;
     private float tx, ty, cy;
-    private boolean straight, animComplete;
+    private boolean straight, animComplete, dragArc;
     private ValueAnimator anim;
 
     // Touch state.
@@ -182,16 +185,21 @@ final class ReaderView extends View implements PdfEngine.Callback {
         dimPaint.setColor(0x73000000);
         markPaint.setColor(0x66FFD400);
         // Unit-length gradients; each is stretched with canvas.scale() when drawn.
-        foldShadow.setShader(new LinearGradient(0, 0, -1, 0, 0x66000000, 0x00000000, Shader.TileMode.CLAMP));
-        edgeGradH = new LinearGradient(0, 0, 1, 0, 0x48000000, 0x00000000, Shader.TileMode.CLAMP);
-        edgeGradV = new LinearGradient(0, 0, 0, 1, 0x48000000, 0x00000000, Shader.TileMode.CLAMP);
+        // Shadows ease out (strong only right at the paper's edge) rather than ramping evenly,
+        // which is what makes a shadow look soft instead of like a grey stripe.
+        float[] ease = {0f, 0.30f, 0.65f, 1f};
+        foldShadow.setShader(new LinearGradient(0, 0, -1, 0,
+                new int[]{0x38000000, 0x18000000, 0x06000000, 0x00000000}, ease, Shader.TileMode.CLAMP));
+        int[] soft = {0x24000000, 0x0F000000, 0x04000000, 0x00000000};
+        edgeGradH = new LinearGradient(0, 0, 1, 0, soft, ease, Shader.TileMode.CLAMP);
+        edgeGradV = new LinearGradient(0, 0, 0, 1, soft, ease, Shader.TileMode.CLAMP);
         edgeShadowH.setShader(edgeGradH);
         edgeShadowV.setShader(edgeGradV);
         // Across the flat part of the turned sheet, from where it leaves the roll to its free
         // edge: it starts at the roll's last shade and darkens a little again at the edge.
         flapGrad = new LinearGradient(0, 0, 1, 0,
-                new int[]{0x26000000, 0x00000000, 0x00000000, 0x1C000000},
-                new float[]{0f, 0.35f, 0.80f, 1f}, Shader.TileMode.CLAMP);
+                new int[]{0x14000000, 0x00000000, 0x00000000, 0x08000000},
+                new float[]{0f, 0.30f, 0.85f, 1f}, Shader.TileMode.CLAMP);
         flapShade.setShader(flapGrad);
         int[] light = new int[33];
         float[] at = new float[light.length];
@@ -503,14 +511,28 @@ final class ReaderView extends View implements PdfEngine.Callback {
         if (bookmarked(screen)) c.drawPath(ribbonPath, ribbon);
         if (noted(screen)) c.drawPath(notePath, notePaint);
         drawMarks(c, screen);
+        drawFooter(c, screen);
         if (rulerOn && screen == cur && tState == IDLE) {
-            // Dim everything but a band a few lines tall; drag up or down to move it.
-            float h = getHeight() - footerH, band = 96 * dp;
+            // Dim everything, page number included, except one band; drag up or down to move it.
+            float h = getHeight() - footerH, band = Math.min(rulerBand * dp, h);
             float top = clamp(rulerY * h - band / 2f, 0f, h - band);
             c.drawRect(0, 0, getWidth(), top, dimPaint);
-            c.drawRect(0, top + band, getWidth(), h, dimPaint);
+            c.drawRect(0, top + band, getWidth(), getHeight(), dimPaint);
         }
-        drawFooter(c, screen);
+    }
+
+    /** Removes the most recent highlight made in this sitting. */
+    boolean undoMark() {
+        while (!markLog.isEmpty()) {
+            Object[] last = markLog.remove(markLog.size() - 1);
+            java.util.ArrayList<float[]> list = book.highlights.get((Integer) last[0]);
+            if (list == null || !list.remove(last[1])) continue;
+            if (list.isEmpty()) book.highlights.remove((Integer) last[0]);
+            if (listener != null) listener.onMarksChanged();
+            invalidate();
+            return true;
+        }
+        return false;
     }
 
     private void drawMarks(Canvas c, int screen) {
@@ -543,6 +565,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
             java.util.ArrayList<float[]> list = book.highlights.get(first + i);
             if (list == null) book.highlights.put(first + i, list = new java.util.ArrayList<>());
             list.add(f);
+            markLog.add(new Object[]{first + i, f});
             if (listener != null) listener.onMarksChanged();
             return;
         }
@@ -711,7 +734,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
         // Soft shadows just outside its free edges, each cut off where the sheet meets the roll.
         // They stop at the corner: overlapping past it would leave a dark square.
-        float es = clamp(d * 0.10f, 4 * dp, 28 * dp);
+        float es = clamp(d * 0.12f, 6 * dp, 40 * dp);
         setQuad(quad, w, 0, w + es, 0, w + es, h, w, h);
         if (toPath(pathB, poly, cut(quad, 4, -half, -1f, poly))) {
             shaderMatrix.setScale(es, 1f);
@@ -762,16 +785,16 @@ final class ReaderView extends View implements PdfEngine.Callback {
         float black, white = 0f;
         if (a <= PI / 2f) {
             float t = 1f - (float) Math.cos(a);
-            black = 0.46f * t * (float) Math.sqrt(t);
+            black = 0.24f * t * (float) Math.sqrt(t);
         } else {
             float t = (a - PI / 2f) / (PI / 2f);
             if (t < 0.30f) {
-                black = 0.40f * (1f - t / 0.30f);
+                black = 0.22f * (1f - t / 0.30f);
             } else if (t < 0.75f) {
                 black = 0f;
-                white = 0.20f * (float) Math.sin(Math.PI * (t - 0.30f) / 0.45f);
+                white = 0.13f * (float) Math.sin(Math.PI * (t - 0.30f) / 0.45f);
             } else {
-                black = 0.15f * (t - 0.75f) / 0.25f;
+                black = 0.08f * (t - 0.75f) / 0.25f;
             }
         }
         return white > 0f ? (Math.round(white * 255f) << 24) | 0xFFFFFF : Math.round(black * 255f) << 24;
@@ -914,15 +937,17 @@ final class ReaderView extends View implements PdfEngine.Callback {
         float w = getWidth(), h = getHeight();
         tState = DRAG;
         tDir = dir;
-        if (dir > 0 && animMode == ANIM_CURL && downY > 0.62f * h) {
-            straight = false;
-            cy = h;
-        } else if (dir > 0 && animMode == ANIM_CURL && downY < 0.38f * h) {
-            straight = false;
-            cy = 0;
-        } else {
+        if (animMode != ANIM_CURL) {
             straight = true;
             cy = downY;
+            dragArc = false;
+        } else {
+            // A drag from a corner follows the finger. From the side of the page (and when
+            // turning back) the bottom corner leads in a shallow arc, as a tapped turn does:
+            // a dead-vertical fold looks like a sliding panel, not paper.
+            straight = false;
+            cy = dir > 0 && downY < 0.38f * h ? 0 : h;
+            dragArc = dir < 0 || (downY >= 0.38f * h && downY <= 0.62f * h);
         }
         tx = dir > 0 ? w : -w;
         ty = cy;
@@ -937,6 +962,10 @@ final class ReaderView extends View implements PdfEngine.Callback {
         } else {
             tx = -w + (x - downX) * 2f * w / Math.max(w - downX, 0.35f * w);
             ty = cy;
+        }
+        if (dragArc) {
+            float q = (w - clamp(tx, -w, w)) / (2f * w);
+            ty = cy - (float) Math.sin(Math.PI * q) * 0.13f * getHeight();
         }
         constrain();
         invalidate();

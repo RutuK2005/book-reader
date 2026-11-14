@@ -96,11 +96,17 @@ final class Library {
         return new File(ctx.getFilesDir(), "covers/" + b.id + ".jpg");
     }
 
-    /** Most recently opened first. */
+    /** The books in the order the reader has arranged them; new books go to the front. */
     synchronized ArrayList<Book> list() {
-        ArrayList<Book> out = new ArrayList<>(books);
-        Collections.sort(out, (a, b) -> Long.compare(Math.max(b.opened, b.added), Math.max(a.opened, a.added)));
-        return out;
+        return new ArrayList<>(books);
+    }
+
+    /** Moves a book to where another one sits; the books in between shift along. */
+    synchronized void move(Book book, Book onto) {
+        int to = books.indexOf(onto);
+        if (to < 0 || !books.remove(book)) return;
+        books.add(to, book);
+        save();
     }
 
     synchronized Book find(String id) {
@@ -260,7 +266,7 @@ final class Library {
             throw e;
         }
         synchronized (this) {
-            books.add(b);
+            books.add(0, b);
             save();
         }
         return b;

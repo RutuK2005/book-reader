@@ -78,6 +78,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     private long sleepAt;
     private View sleepCover;
     private TextView autoBtn, sleepBtn, noteBtn, rulerBtn, markBtn, dictBtn;
+    private View markBar;
 
     // Preview of the page the slider is on.
     private LinearLayout thumbBox;
@@ -145,6 +146,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         applyBrightness();
         immersive();
         view.rulerOn = prefs.getBoolean(P.RULER, false);
+        view.rulerBand = prefs.getFloat(P.RULER_H, 96f);
         applySaver();
 
         String id = getIntent().getStringExtra(EXTRA_ID);
@@ -948,6 +950,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         });
         markBtn = pill(mc, v -> {
             view.marking = !view.marking;
+            markBar.setVisibility(view.marking ? View.VISIBLE : View.GONE);
             refreshPills();
             if (view.marking) {
                 showMenu(false);
@@ -961,6 +964,31 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             tools.addView(p, lp);
         }
         bot.addView(tools, rowParams(8));
+
+        LinearLayout rulerRow = row(mc);
+        rulerRow.addView(label(mc, "Ruler size", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
+        SeekBar rulerSeek = seek(mc);
+        rulerSeek.setMax(100);
+        rulerSeek.setProgress(Math.round((view.rulerBand - 40f) / 3.2f));
+        rulerSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                if (!fromUser) return;
+                view.rulerBand = 40f + p * 3.2f;
+                prefs.edit().putFloat(P.RULER_H, view.rulerBand).apply();
+                view.invalidate();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar s) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar s) {
+            }
+        });
+        rulerRow.addView(rulerSeek, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        bot.addView(rulerRow, rowParams(8));
         CheckBox saverBox = check(mc, "Extreme battery saver", prefs.getBoolean(P.SAVER, false));
         saverBox.setOnCheckedChangeListener((v, on) -> {
             prefs.edit().putBoolean(P.SAVER, on).apply();
@@ -982,6 +1010,27 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         scroller.addView(bot, new FrameLayout.LayoutParams(MATCH, WRAP));
         root.addView(scroller, new FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM));
         bottomPanel = scroller;
+
+        // Shown while highlighting: take back the last highlight, or finish.
+        LinearLayout bar = new LinearLayout(mc);
+        bar.setPadding(d(6), d(6), d(6), d(6));
+        GradientDrawable barBg = new GradientDrawable();
+        barBg.setColor(PANEL);
+        barBg.setCornerRadius(d(24));
+        bar.setBackground(barBg);
+        bar.addView(barButton(mc, "Undo highlight", v -> {
+            if (!view.undoMark()) toast("Nothing to undo. Tap a highlight to remove it.");
+        }));
+        bar.addView(barButton(mc, "Done", v -> {
+            view.marking = false;
+            markBar.setVisibility(View.GONE);
+            refreshPills();
+        }));
+        bar.setVisibility(View.GONE);
+        FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        barLp.topMargin = d(10);
+        root.addView(bar, barLp);
+        markBar = bar;
 
         // Preview of the page under the slider, shown only while it is being dragged.
         thumbBox = new LinearLayout(mc);

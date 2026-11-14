@@ -18,6 +18,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.TextUtils;
+import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -107,10 +108,7 @@ public class LibraryActivity extends Activity {
 
         Library.Book current = null;
         for (Library.Book b : all) {
-            if (b.started() && !b.finished()) {
-                current = b;
-                break;
-            }
+            if (b.started() && !b.finished() && (current == null || b.opened > current.opened)) current = b;
         }
         if (open && current != null) page.addView(continueCard(current), top(MATCH, WRAP, 14));
 
@@ -355,8 +353,35 @@ public class LibraryActivity extends Activity {
         s.setMaxLines(2);
         c.addView(s, top(MATCH, WRAP, 2));
         c.setOnClickListener(v -> openBook(b));
+        // Hold a book and drag it onto another to move it there. Letting go where it started
+        // opens its menu instead.
         c.setOnLongClickListener(v -> {
-            bookMenu(b);
+            v.startDragAndDrop(null, new View.DragShadowBuilder(v), b, 0);
+            return true;
+        });
+        c.setOnDragListener((v, e) -> {
+            if (!(e.getLocalState() instanceof Library.Book)) return false;
+            Library.Book moving = (Library.Book) e.getLocalState();
+            switch (e.getAction()) {
+                case DragEvent.ACTION_DRAG_ENTERED:
+                    if (moving != b) v.setAlpha(0.4f);
+                    break;
+                case DragEvent.ACTION_DRAG_EXITED:
+                case DragEvent.ACTION_DRAG_ENDED:
+                    v.setAlpha(1f);
+                    break;
+                case DragEvent.ACTION_DROP:
+                    v.setAlpha(1f);
+                    if (moving == b) {
+                        bookMenu(b);
+                    } else {
+                        lib.move(moving, b);
+                        build();
+                    }
+                    break;
+                default:
+                    break;
+            }
             return true;
         });
         return c;
