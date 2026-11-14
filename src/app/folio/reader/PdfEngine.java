@@ -197,6 +197,34 @@ final class PdfEngine {
         });
     }
 
+    interface ThumbResult {
+        void done(int seq, Bitmap bmp);
+    }
+
+    volatile int thumbSeq;
+
+    /** A small picture of one whole page, for previewing where the page slider will land. */
+    void requestThumb(final int seq, final int page, final int maxW, final int maxH, final ThumbResult r) {
+        worker.post(() -> {
+            // Only the newest request matters while the slider is moving.
+            if (seq != thumbSeq || renderer == null) return;
+            Bitmap b = null;
+            try (PdfRenderer.Page p = renderer.openPage(page)) {
+                float sc = Math.min(maxW / (float) p.getWidth(), maxH / (float) p.getHeight());
+                b = Bitmap.createBitmap(Math.max(1, Math.round(p.getWidth() * sc)),
+                        Math.max(1, Math.round(p.getHeight() * sc)), Bitmap.Config.ARGB_8888);
+                b.eraseColor(Color.WHITE);
+                Matrix m = new Matrix();
+                m.setScale(sc, sc);
+                p.render(b, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+            } catch (Throwable ignored) {
+                // No preview for this page.
+            }
+            final Bitmap out = b;
+            ui.post(() -> r.done(seq, out));
+        });
+    }
+
     /** Drops the spare bitmaps. */
     void trim() {
         synchronized (pool) {

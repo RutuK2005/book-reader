@@ -29,6 +29,8 @@ import android.view.WindowManager;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.ScrollView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -63,6 +65,25 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     private final TextView[] animBtns = new TextView[3];
     private boolean menuVisible, ready;
     private long lastTurnAt;
+    private PageSound pageSound;
+    private int shownTheme = -1;
+
+    // Reading time, credited to today's total and to the book.
+    private long lastCredit, creditMs;
+
+    // Hands-free reading and the bedtime timer. Both last only for this reading session.
+    private static final int[] AUTO_CHOICES = {0, 15, 30, 45, 60, 90, 120};
+    private static final int[] SLEEP_CHOICES = {0, 15, 30, 45, 60};
+    private int autoSec, sleepMin;
+    private long sleepAt;
+    private View sleepCover;
+    private TextView autoBtn, sleepBtn, noteBtn;
+
+    // Preview of the page the slider is on.
+    private LinearLayout thumbBox;
+    private ImageView thumbImage;
+    private TextView thumbText;
+    private int thumbSeq;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean awake, unsaved;
@@ -83,6 +104,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
                 return;
             }
             unsaved = false;
+            flushReadingTime();
             new Thread(() -> lib.save()).start();
         }
     };
@@ -90,8 +112,20 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         @Override
         public void onReceive(Context c, Intent i) {
             updateStatus();
+            // The night theme switches itself on and off at its hours.
+            if (P.theme(prefs) != shownTheme) applyTheme();
         }
     };
+    /** Turns the page every autoSec seconds until the reader touches the screen or the book ends. */
+    private final Runnable autoTurn = new Runnable() {
+        @Override
+        public void run() {
+            if (autoSec <= 0 || !ready) return;
+            if (!menuVisible && sleepCover == null) view.turn(1, true);
+            handler.postDelayed(this, autoSec * 1000L);
+        }
+    };
+    private final Runnable sleepNow = this::showSleepCover;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -110,6 +144,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         applyTheme();
         applyBrightness();
         immersive();
+        if (prefs.getBoolean(P.SOUND, true)) pageSound = new PageSound();
 
         String id = getIntent().getStringExtra(EXTRA_ID);
         Library.Book b = id == null ? null : lib.find(id);
@@ -199,9 +234,12 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     protected void onResume() {
         super.onResume();
         registerReceiver(minuteTick, new IntentFilter(Intent.ACTION_TIME_TICK));
-        lastTurnAt = SystemClock.elapsedRealtime();
+        lastTurnAt = lastCredit = SystemClock.elapsedRealtime();
+        if (P.theme(prefs) != shownTheme) applyTheme();
         updateStatus();
         keepAwake();
+        if (autoSec > 0) handler.postDelayed(autoTurn, autoSec * 1000L);
+        if (sleepAt > 0) handler.postDelayed(sleepNow, Math.max(0, sleepAt - SystemClock.elapsedRealtime()));
     }
 
     @Override
@@ -210,10 +248,15 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         unregisterReceiver(minuteTick);
         handler.removeCallbacks(letScreenSleep);
         handler.removeCallbacks(saveProgress);
+        handler.removeCallbacks(autoTurn);
+        handler.removeCallbacks(sleepNow);
         awake = false;
         unsaved = false;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        credit();
+        lastCredit = 0;
         if (ready) {
+            flushReadingTime();
             book.page = view.getPage();
             book.opened = System.currentTimeMillis();
             lib.save();
@@ -237,6 +280,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         super.onDestroy();
         view.detach();
         if (engine != null) engine.close();
+        if (pageSound != null) pageSound.release();
     }
 
     @Override
@@ -253,7 +297,21 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
                         | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
     }
 
+    /** Counts the time since the last sign of life as reading, up to three minutes of it. */
+    private void credit() {
+        long now = SystemClock.elapsedRealtime();
+        if (lastCredit > 0) creditMs += Math.min(now - lastCredit, 180_000L);
+        lastCredit = now;
+    }
+
+    private void flushReadingTime() {
+        if (book == null || creditMs < 1000) return;
+        lib.addReading(book, (int) (creditMs / 1000));
+        creditMs %= 1000;
+    }
+
     private void keepAwake() {
+        if (sleepCover != null) return;
         // Setting a window flag forces a window re-layout, so only do it when it is not already set.
         if (!awake) {
             awake = true;
@@ -326,7 +384,12 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             }
         }
         lastTurnAt = now;
+        credit();
         book.page = page;
+        if (dir == 1 && !book.celebrated && page + view.pagesOnScreen() >= book.pages) {
+            book.celebrated = true;
+            celebrate();
+        }
         unsaved = true;
         handler.removeCallbacks(saveProgress);
         handler.postDelayed(saveProgress, SAVE_DELAY_MS);
@@ -335,13 +398,25 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     }
 
     @Override
+    public void onTurn() {
+        if (pageSound != null) pageSound.play();
+    }
+
+    @Override
     public void onEdge(int dir) {
+        if (dir > 0 && autoSec > 0) setAuto(0);
         toast(dir > 0 ? "End of the book" : "This is the first page");
     }
 
     @Override
     public void onUserActivity() {
         keepAwake();
+        credit();
+        if (autoSec > 0) {
+            // A touch means the reader is not ready for the next page: start the wait again.
+            handler.removeCallbacks(autoTurn);
+            handler.postDelayed(autoTurn, autoSec * 1000L);
+        }
         if (unsaved) {
             // Still flipping: push the save back until the reader has stopped touching the screen.
             handler.removeCallbacks(saveProgress);
@@ -352,13 +427,15 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
     // ---------------------------------------------------------------- settings
 
     private void applyTheme() {
-        int t = prefs.getInt(P.THEME, 1);
+        int chosen = prefs.getInt(P.THEME, 1);
+        int t = P.theme(prefs);
+        shownTheme = t;
         float warmth = prefs.getFloat(P.WARMTH, 0f);
         view.applyTheme(t, warmth);
         // The reader view paints every pixel itself; a window background would only be drawn
         // underneath it on every frame.
         getWindow().setBackgroundDrawable(null);
-        for (int i = 0; i < swatches.length; i++) styleSwatch(swatches[i], i, i == t);
+        for (int i = 0; i < swatches.length; i++) styleSwatch(swatches[i], i, i == chosen);
     }
 
     private void applyBrightness() {
@@ -393,7 +470,131 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
                 if (level >= 0 && scale > 0) s += "   ·   battery " + (level * 100 / scale) + "%";
             }
         }
-        view.setStatus(s, show);
+        if (autoSec > 0) s = "auto-turn " + autoSec + " s" + (s.isEmpty() ? "" : "   ·   " + s);
+        view.setStatus(s, show || autoSec > 0);
+    }
+
+    // ---------------------------------------------------------------- hands-free and bedtime
+
+    private void setAuto(int seconds) {
+        autoSec = seconds;
+        handler.removeCallbacks(autoTurn);
+        if (seconds > 0) handler.postDelayed(autoTurn, seconds * 1000L);
+        updateStatus();
+        refreshPills();
+    }
+
+    private void setSleep(int minutes) {
+        sleepMin = minutes;
+        handler.removeCallbacks(sleepNow);
+        sleepAt = minutes > 0 ? SystemClock.elapsedRealtime() + minutes * 60_000L : 0;
+        if (minutes > 0) handler.postDelayed(sleepNow, minutes * 60_000L);
+        refreshPills();
+    }
+
+    /** Bedtime: dim right down, stop holding the screen on, and wait for a tap to carry on. */
+    private void showSleepCover() {
+        if (sleepCover != null || isFinishing()) return;
+        setSleep(0);
+        setAuto(0);
+        showMenu(false);
+        TextView cover = label(this, "Sleep timer ended\n\nTap to keep reading", 18, 0xFFBBBBBB);
+        cover.setGravity(Gravity.CENTER);
+        cover.setBackgroundColor(0xF2000000);
+        cover.setOnClickListener(v -> {
+            root.removeView(sleepCover);
+            sleepCover = null;
+            applyBrightness();
+            keepAwake();
+        });
+        sleepCover = cover;
+        root.addView(cover, new FrameLayout.LayoutParams(MATCH, MATCH));
+        handler.removeCallbacks(letScreenSleep);
+        letScreenSleep.run();
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = 0.01f;
+        getWindow().setAttributes(lp);
+    }
+
+    private void refreshPills() {
+        if (autoBtn == null) return;
+        autoBtn.setText(autoSec > 0 ? "Auto-turn: " + autoSec + " s" : "Auto-turn: off");
+        stylePill(autoBtn, autoSec > 0);
+        long left = sleepAt > 0 ? Math.max(1, (sleepAt - SystemClock.elapsedRealtime() + 59_000L) / 60_000L) : 0;
+        sleepBtn.setText(sleepAt > 0 ? "Sleep in " + left + " min" : "Sleep timer: off");
+        stylePill(sleepBtn, sleepAt > 0);
+        boolean noted = ready && noteKey() >= 0;
+        noteBtn.setText(noted ? "Edit note" : "Add note");
+        stylePill(noteBtn, noted);
+    }
+
+    private void stylePill(TextView t, boolean on) {
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(d(18));
+        if (on) g.setColor(ACCENT);
+        else g.setStroke(d(1), 0xFF6A6A6A);
+        t.setBackground(g);
+        t.setTextColor(on ? 0xFF1B1B1D : TEXT);
+    }
+
+    private static int next(int[] choices, int current) {
+        for (int i = 0; i < choices.length; i++) if (choices[i] == current) return choices[(i + 1) % choices.length];
+        return choices[0];
+    }
+
+    private void celebrate() {
+        ConfettiView confetti = new ConfettiView(this);
+        root.addView(confetti, new FrameLayout.LayoutParams(MATCH, MATCH));
+        confetti.start();
+        Toast.makeText(this, "You finished “" + book.title + "”", Toast.LENGTH_LONG).show();
+    }
+
+    // ---------------------------------------------------------------- notes
+
+    /** The page on screen that has a note, or -1. */
+    private int noteKey() {
+        int page = view.getPage();
+        for (int i = 0; i < view.pagesOnScreen(); i++) if (book.notes.containsKey(page + i)) return page + i;
+        return -1;
+    }
+
+    private void noteDialog() {
+        if (!ready) return;
+        final int existing = noteKey();
+        final int page = existing >= 0 ? existing : view.getPage();
+        final EditText input = new EditText(new ContextThemeWrapper(this, android.R.style.Theme_Material_Dialog_Alert));
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.setMinLines(3);
+        input.setGravity(Gravity.TOP);
+        input.setHint("A thought about this page");
+        input.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
+        if (existing >= 0) input.setText(book.notes.get(existing));
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(d(22), d(8), d(22), 0);
+        wrap.addView(input);
+        AlertDialog.Builder b = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Note on page " + (page + 1))
+                .setView(wrap)
+                .setPositiveButton("Save", (dlg, which) -> {
+                    String text = input.getText().toString().trim();
+                    if (text.isEmpty()) book.notes.remove(page);
+                    else book.notes.put(page, text);
+                    notesChanged();
+                })
+                .setNegativeButton("Cancel", null);
+        if (existing >= 0) {
+            b.setNeutralButton("Delete", (dlg, which) -> {
+                book.notes.remove(page);
+                notesChanged();
+            });
+        }
+        present(b.create(), input);
+    }
+
+    private void notesChanged() {
+        lib.save();
+        view.invalidate();
+        refreshPills();
     }
 
     // ---------------------------------------------------------------- menu
@@ -412,6 +613,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         pageLabel.setText(pageText(page));
         starBtn.setText(view.isCurrentBookmarked() ? "★" : "☆");
         starBtn.setTextColor(view.isCurrentBookmarked() ? ACCENT : TEXT);
+        refreshPills();
     }
 
     private String pageText(int page) {
@@ -458,7 +660,10 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         pageSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
-                if (fromUser && ready) pageLabel.setText(pageText(Math.min(p, book.pages - 1)));
+                if (!fromUser || !ready) return;
+                int page = Math.min(p, book.pages - 1);
+                pageLabel.setText(pageText(page));
+                showThumb(page);
             }
 
             @Override
@@ -467,6 +672,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
 
             @Override
             public void onStopTrackingTouch(SeekBar s) {
+                thumbBox.setVisibility(View.GONE);
                 if (ready) view.goToPage(s.getProgress());
             }
         });
@@ -595,10 +801,72 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         bot.addView(checksA, rowParams(10));
         bot.addView(checksB, rowParams(2));
 
-        root.addView(bot, new FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM));
-        bottomPanel = bot;
+        LinearLayout checksC = row(mc);
+        CheckBox sound = check(mc, "Page-turn sound", prefs.getBoolean(P.SOUND, true));
+        sound.setOnCheckedChangeListener((v, on) -> {
+            prefs.edit().putBoolean(P.SOUND, on).apply();
+            if (pageSound != null) pageSound.release();
+            pageSound = on ? new PageSound() : null;
+            if (on) pageSound.play();
+        });
+        CheckBox night = check(mc, "Night theme 9 pm – 6 am", prefs.getBoolean(P.AUTO_NIGHT, false));
+        night.setOnCheckedChangeListener((v, on) -> {
+            prefs.edit().putBoolean(P.AUTO_NIGHT, on).apply();
+            applyTheme();
+        });
+        checksC.addView(sound, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        checksC.addView(night, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        bot.addView(checksC, rowParams(2));
+
+        LinearLayout pills = row(mc);
+        autoBtn = pill(mc, v -> setAuto(next(AUTO_CHOICES, autoSec)));
+        sleepBtn = pill(mc, v -> setSleep(next(SLEEP_CHOICES, sleepMin)));
+        noteBtn = pill(mc, v -> noteDialog());
+        for (TextView p : new TextView[]{autoBtn, sleepBtn, noteBtn}) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+            lp.setMargins(d(4), 0, d(4), 0);
+            pills.addView(p, lp);
+        }
+        bot.addView(pills, rowParams(12));
+        refreshPills();
+
+        // The panel can be taller than a landscape screen at large font sizes, so it scrolls,
+        // and never takes more than three quarters of the height.
+        ScrollView scroller = new ScrollView(mc) {
+            @Override
+            protected void onMeasure(int wSpec, int hSpec) {
+                int max = Math.round(getResources().getDisplayMetrics().heightPixels * 0.76f);
+                super.onMeasure(wSpec, MeasureSpec.makeMeasureSpec(max, MeasureSpec.AT_MOST));
+            }
+        };
+        scroller.setBackgroundColor(PANEL);
+        scroller.addView(bot, new FrameLayout.LayoutParams(MATCH, WRAP));
+        root.addView(scroller, new FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM));
+        bottomPanel = scroller;
+
+        // Preview of the page under the slider, shown only while it is being dragged.
+        thumbBox = new LinearLayout(mc);
+        thumbBox.setOrientation(LinearLayout.VERTICAL);
+        thumbBox.setGravity(Gravity.CENTER_HORIZONTAL);
+        thumbBox.setPadding(d(10), d(10), d(10), d(8));
+        GradientDrawable box = new GradientDrawable();
+        box.setColor(PANEL);
+        box.setCornerRadius(d(12));
+        thumbBox.setBackground(box);
+        thumbBox.setElevation(d(8));
+        thumbImage = new ImageView(mc);
+        thumbImage.setAdjustViewBounds(true);
+        thumbImage.setBackgroundColor(0xFFFFFFFF);
+        thumbBox.addView(thumbImage, new LinearLayout.LayoutParams(d(170), d(240)));
+        thumbText = label(mc, "", 13, TEXT);
+        thumbText.setPadding(0, d(6), 0, 0);
+        thumbBox.addView(thumbText);
+        thumbBox.setVisibility(View.GONE);
+        FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        tlp.topMargin = d(90);
+        root.addView(thumbBox, tlp);
         top.setVisibility(View.GONE);
-        bot.setVisibility(View.GONE);
+        bottomPanel.setVisibility(View.GONE);
     }
 
     private void styleSwatch(TextView sw, int theme, boolean selected) {
@@ -637,16 +905,23 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
 
     private void bookmarksDialog() {
         if (!ready) return;
-        if (book.bookmarks.isEmpty()) {
-            toast("No bookmarks yet. Tap ☆ to mark this page.");
+        if (book.bookmarks.isEmpty() && book.notes.isEmpty()) {
+            toast("Nothing marked yet. Tap ☆ to bookmark this page, or add a note.");
             return;
         }
-        final ArrayList<Integer> pages = new ArrayList<>(book.bookmarks);
-        Collections.sort(pages);
+        // Bookmarks and notes share one list, in page order.
+        java.util.TreeSet<Integer> marked = new java.util.TreeSet<>(book.bookmarks);
+        marked.addAll(book.notes.keySet());
+        final ArrayList<Integer> pages = new ArrayList<>(marked);
         String[] items = new String[pages.size()];
-        for (int i = 0; i < items.length; i++) items[i] = "Page " + (pages.get(i) + 1);
+        for (int i = 0; i < items.length; i++) {
+            int p = pages.get(i);
+            String note = book.notes.get(p);
+            if (note != null && note.length() > 60) note = note.substring(0, 60).trim() + "…";
+            items[i] = "Page " + (p + 1) + (book.bookmarks.contains(p) ? "  ★" : "") + (note == null ? "" : "\n" + note);
+        }
         present(new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle("Bookmarks")
+                .setTitle("Bookmarks and notes")
                 .setItems(items, (dlg, which) -> {
                     view.goToPage(pages.get(which));
                     showMenu(false);
@@ -713,6 +988,25 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         s.setProgressTintList(ColorStateList.valueOf(ACCENT));
         s.setThumbTintList(ColorStateList.valueOf(ACCENT));
         return s;
+    }
+
+    private TextView pill(Context c, View.OnClickListener l) {
+        TextView t = label(c, "", 13, TEXT);
+        t.setGravity(Gravity.CENTER);
+        t.setSingleLine(true);
+        t.setPadding(d(6), d(9), d(6), d(9));
+        t.setOnClickListener(l);
+        return t;
+    }
+
+    private void showThumb(final int page) {
+        thumbText.setText("Page " + (page + 1));
+        thumbBox.setVisibility(View.VISIBLE);
+        final int seq = ++thumbSeq;
+        engine.thumbSeq = seq;
+        engine.requestThumb(seq, page, d(170), d(240), (s, bmp) -> {
+            if (s == thumbSeq && bmp != null && !isDestroyed()) thumbImage.setImageBitmap(bmp);
+        });
     }
 
     private CheckBox check(Context c, String text, boolean on) {

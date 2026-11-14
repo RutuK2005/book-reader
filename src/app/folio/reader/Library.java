@@ -20,25 +20,48 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * The bookshelf. Imported PDFs are copied into app-private storage, so a book keeps working even
- * if the original file is moved or deleted, and no storage permission is ever needed.
+ * if the original file is moved or deleted, and no storage permission is ever needed. Also keeps
+ * the user's shelves and a per-day reading log for the streak and daily goal.
  */
 final class Library {
 
     static final class Book {
         String id, title, src;
+        /** Name of the shelf this book is filed on, or "" for none. */
+        String shelf = "";
         int pages, page;
         long opened, added, size;
         /** Margin crop, as fractions of the page (l, t, r, b), for even and odd page indices. */
         float[] cropEven, cropOdd;
         boolean cropDone, cropCover;
         final ArrayList<Integer> bookmarks = new ArrayList<>();
+        /** Short notes attached to pages (page index -> text). */
+        final TreeMap<Integer, String> notes = new TreeMap<>();
         /** Running average of reading speed, for the "time left" estimate. */
         float secPerPage;
         int samples;
+        /** Total time spent reading this book. */
+        long readSec;
+        /** Set once the "you finished it" moment has been shown. */
+        boolean celebrated;
+
+        boolean started() {
+            return opened > 0 && page > 0;
+        }
+
+        boolean finished() {
+            return pages > 0 && page >= pages - 1;
+        }
     }
 
     private static Library inst;
@@ -51,6 +74,9 @@ final class Library {
     private final Context ctx;
     private final File index;
     private final ArrayList<Book> books = new ArrayList<>();
+    private final ArrayList<String> shelves = new ArrayList<>();
+    /** Seconds read per day, keyed "yyyy-MM-dd". */
+    private final HashMap<String, Integer> daily = new HashMap<>();
 
     private Library(Context c) {
         ctx = c;
@@ -86,6 +112,88 @@ final class Library {
         cover(b).delete();
         save();
     }
+
+    // ---------------------------------------------------------------- shelves
+
+    synchronized ArrayList<String> shelves() {
+        return new ArrayList<>(shelves);
+    }
+
+    /** Returns the stored name, or null if the name is empty. Adding an existing shelf is a no-op. */
+    synchronized String addShelf(String name) {
+        String n = clean(name);
+        if (n.isEmpty()) return null;
+        for (String s : shelves) if (s.equalsIgnoreCase(n)) return s;
+        shelves.add(n);
+        save();
+        return n;
+    }
+
+    synchronized void renameShelf(String from, String to) {
+        String n = clean(to);
+        int i = shelves.indexOf(from);
+        if (i < 0 || n.isEmpty() || shelves.contains(n)) return;
+        shelves.set(i, n);
+        for (Book b : books) if (from.equals(b.shelf)) b.shelf = n;
+        save();
+    }
+
+    /** Removes the shelf; its books stay in the library, just unfiled. */
+    synchronized void deleteShelf(String name) {
+        if (!shelves.remove(name)) return;
+        for (Book b : books) if (name.equals(b.shelf)) b.shelf = "";
+        save();
+    }
+
+    private static String clean(String s) {
+        String n = s == null ? "" : s.trim();
+        return n.length() > 24 ? n.substring(0, 24).trim() : n;
+    }
+
+    // ---------------------------------------------------------------- reading log
+
+    private static String dayKey(int daysAgo) {
+        Calendar c = Calendar.getInstance();
+        c.add(Calendar.DAY_OF_YEAR, -daysAgo);
+        return String.format(Locale.US, "%04d-%02d-%02d",
+                c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH));
+    }
+
+    /** Credits reading time to today and to the book. The caller saves. */
+    synchronized void addReading(Book b, int seconds) {
+        if (seconds <= 0) return;
+        if (b != null) b.readSec += seconds;
+        String key = dayKey(0);
+        Integer have = daily.get(key);
+        daily.put(key, (have == null ? 0 : have) + seconds);
+        if (daily.size() > 400) {
+            // Keep about a year: anything older can no longer affect a streak or a weekly total.
+            String oldest = dayKey(370);
+            for (Iterator<Map.Entry<String, Integer>> it = daily.entrySet().iterator(); it.hasNext(); ) {
+                if (it.next().getKey().compareTo(oldest) < 0) it.remove();
+            }
+        }
+    }
+
+    synchronized int secondsOn(int daysAgo) {
+        Integer v = daily.get(dayKey(daysAgo));
+        return v == null ? 0 : v;
+    }
+
+    synchronized int weekSeconds() {
+        int sum = 0;
+        for (int i = 0; i < 7; i++) sum += secondsOn(i);
+        return sum;
+    }
+
+    /** Consecutive days with at least a minute of reading. Today not having happened yet does not break it. */
+    synchronized int streak() {
+        int n = 0;
+        for (int i = secondsOn(0) >= 60 ? 0 : 1; secondsOn(i) >= 60; i++) n++;
+        return n;
+    }
+
+    // ---------------------------------------------------------------- import
 
     /** Copies a PDF into the library. Slow (file copy + cover render): call off the UI thread. */
     Book importUri(Uri uri) throws Exception {
@@ -169,24 +277,34 @@ final class Library {
         return t.isEmpty() ? "Untitled" : t;
     }
 
+    // ---------------------------------------------------------------- storage
+
     synchronized void save() {
         try {
             JSONArray arr = new JSONArray();
             for (Book b : books) {
                 JSONObject o = new JSONObject();
-                o.put("id", b.id).put("title", b.title).put("src", b.src);
+                o.put("id", b.id).put("title", b.title).put("src", b.src).put("shelf", b.shelf);
                 o.put("pages", b.pages).put("page", b.page);
                 o.put("opened", b.opened).put("added", b.added).put("size", b.size);
                 o.put("cropDone", b.cropDone).put("cropCover", b.cropCover);
                 if (b.cropEven != null) o.put("cropEven", toJson(b.cropEven));
                 if (b.cropOdd != null) o.put("cropOdd", toJson(b.cropOdd));
                 o.put("bookmarks", new JSONArray(b.bookmarks));
+                JSONObject notes = new JSONObject();
+                for (Map.Entry<Integer, String> e : b.notes.entrySet()) notes.put(String.valueOf(e.getKey()), e.getValue());
+                o.put("notes", notes);
                 o.put("secPerPage", b.secPerPage).put("samples", b.samples);
+                o.put("readSec", b.readSec).put("celebrated", b.celebrated);
                 arr.put(o);
             }
+            JSONObject root = new JSONObject();
+            root.put("books", arr);
+            root.put("shelves", new JSONArray(shelves));
+            root.put("daily", new JSONObject(daily));
             File tmp = new File(index.getPath() + ".tmp");
             try (OutputStream out = new FileOutputStream(tmp)) {
-                out.write(arr.toString().getBytes(StandardCharsets.UTF_8));
+                out.write(root.toString().getBytes(StandardCharsets.UTF_8));
             }
             if (!tmp.renameTo(index)) tmp.delete();
         } catch (Exception ignored) {
@@ -202,13 +320,32 @@ final class Library {
                 int off = 0, n;
                 while (off < data.length && (n = in.read(data, off, data.length - off)) > 0) off += n;
             }
-            JSONArray arr = new JSONArray(new String(data, StandardCharsets.UTF_8));
+            String text = new String(data, StandardCharsets.UTF_8).trim();
+            JSONArray arr;
+            if (text.startsWith("[")) {
+                // The first version stored just the list of books.
+                arr = new JSONArray(text);
+            } else {
+                JSONObject root = new JSONObject(text);
+                arr = root.optJSONArray("books");
+                JSONArray sh = root.optJSONArray("shelves");
+                if (sh != null) for (int i = 0; i < sh.length(); i++) shelves.add(sh.getString(i));
+                JSONObject d = root.optJSONObject("daily");
+                if (d != null) {
+                    for (Iterator<String> it = d.keys(); it.hasNext(); ) {
+                        String k = it.next();
+                        daily.put(k, d.optInt(k));
+                    }
+                }
+            }
+            if (arr == null) return;
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject o = arr.getJSONObject(i);
                 Book b = new Book();
                 b.id = o.getString("id");
                 b.title = o.optString("title", "Untitled");
                 b.src = o.optString("src", "");
+                b.shelf = o.optString("shelf", "");
                 b.pages = o.optInt("pages");
                 b.page = o.optInt("page");
                 b.opened = o.optLong("opened");
@@ -220,8 +357,18 @@ final class Library {
                 b.cropOdd = fromJson(o.optJSONArray("cropOdd"));
                 JSONArray bm = o.optJSONArray("bookmarks");
                 if (bm != null) for (int k = 0; k < bm.length(); k++) b.bookmarks.add(bm.getInt(k));
+                JSONObject notes = o.optJSONObject("notes");
+                if (notes != null) {
+                    for (Iterator<String> it = notes.keys(); it.hasNext(); ) {
+                        String k = it.next();
+                        b.notes.put(Integer.parseInt(k), notes.optString(k));
+                    }
+                }
                 b.secPerPage = (float) o.optDouble("secPerPage", 0);
                 b.samples = o.optInt("samples");
+                b.readSec = o.optLong("readSec");
+                b.celebrated = o.optBoolean("celebrated");
+                if (!b.shelf.isEmpty() && !shelves.contains(b.shelf)) shelves.add(b.shelf);
                 if (file(b).exists()) books.add(b);
             }
         } catch (Exception ignored) {

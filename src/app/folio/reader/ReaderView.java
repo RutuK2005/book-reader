@@ -20,7 +20,7 @@ import android.view.ScaleGestureDetector;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
-import android.view.animation.AccelerateDecelerateInterpolator;
+import android.view.animation.PathInterpolator;
 import android.view.animation.DecelerateInterpolator;
 
 import java.util.HashSet;
@@ -48,11 +48,17 @@ final class ReaderView extends View implements PdfEngine.Callback {
         void onEdge(int dir);
 
         void onUserActivity();
+
+        /** A page has started to turn (fired once per turn, before onPageChanged). */
+        void onTurn();
     }
 
     static final int ANIM_CURL = 0, ANIM_SLIDE = 1, ANIM_NONE = 2;
     private static final int IDLE = 0, DRAG = 1, SETTLE = 2;
     private static final float MAX_ZOOM = 6f;
+    private static final float PI = (float) Math.PI;
+    /** Bands the roll is drawn in: its face, then its back. */
+    private static final int ROLL_FRONT = 5, ROLL_BACK = 12;
 
     Listener listener;
     boolean menuOpen;
@@ -85,13 +91,21 @@ final class ReaderView extends View implements PdfEngine.Callback {
     private final Paint edgeShadowH = new Paint();
     private final Paint edgeShadowV = new Paint();
     private final Paint flapShade = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Shader edgeGradH, edgeGradV, flapGrad;
+    private final Shader edgeGradH, edgeGradV, flapGrad, rollGrad;
     private final Matrix shaderMatrix = new Matrix();
-    private final float[] quad = new float[8], poly = new float[16];
+    private final float[] quad = new float[8], poly = new float[16], poly2 = new float[16];
     private final Path pathA = new Path(), pathB = new Path();
+    /** The back of the sheet on the roll; no anti-aliasing, the bands must meet without seams. */
+    private final Paint rollBackPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Paint shadePaint = new Paint();
+    /** Crease frame of the turn being drawn: origin and unit x axis. */
+    private float fMx, fMy, fNx, fNy;
+    private float maxRadius;
     private final Paint footer = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ribbon = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path ribbonPath = new Path();
+    private final Paint notePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path notePath = new Path();
 
     // Page turn state.
     private int tState = IDLE, tDir;
@@ -106,6 +120,29 @@ final class ReaderView extends View implements PdfEngine.Callback {
     private float downX, downY, lastX, lastY;
     private boolean dragging, multi, tapUsed;
     private int swipeDir;
+
+    // Holding a screen edge riffles through the pages, as fast as they can be rendered.
+    private int riffleDir;
+    private boolean riffled;
+    private final Runnable riffle = new Runnable() {
+        @Override
+        public void run() {
+            if (layout == null || riffleDir == 0) return;
+            int target = cur + riffleDir;
+            if (target < 0 || target >= layout.screenCount()) {
+                riffleDir = 0;
+                return;
+            }
+            if (tState == IDLE && cache.get(target) != null) {
+                riffled = true;
+                if (listener != null) listener.onTurn();
+                setCur(target, riffleDir);
+                postDelayed(this, 70);
+            } else {
+                postDelayed(this, 16);
+            }
+        }
+    };
 
     // Zoom state. zoomBmp is a sharp render of the viewport at (zbZ, zbX, zbY).
     private float zoom = 1f, panX, panY;
@@ -131,18 +168,26 @@ final class ReaderView extends View implements PdfEngine.Callback {
 
         footer.setTextSize(12.5f * c.getResources().getDisplayMetrics().scaledDensity);
         ribbon.setColor(0xFFC0392B);
+        notePaint.setColor(0xFFE8A33D);
         // Unit-length gradients; each is stretched with canvas.scale() when drawn.
         foldShadow.setShader(new LinearGradient(0, 0, -1, 0, 0x66000000, 0x00000000, Shader.TileMode.CLAMP));
         edgeGradH = new LinearGradient(0, 0, 1, 0, 0x48000000, 0x00000000, Shader.TileMode.CLAMP);
         edgeGradV = new LinearGradient(0, 0, 0, 1, 0x48000000, 0x00000000, Shader.TileMode.CLAMP);
         edgeShadowH.setShader(edgeGradH);
         edgeShadowV.setShader(edgeGradV);
-        // Across the flap, crease to free edge: dark in the fold, a highlight where the sheet
-        // bulges toward the reader, then falling off again.
+        // Across the flat part of the turned sheet, from where it leaves the roll to its free
+        // edge: it starts at the roll's last shade and darkens a little again at the edge.
         flapGrad = new LinearGradient(0, 0, 1, 0,
-                new int[]{0x4D000000, 0x0C000000, 0x30FFFFFF, 0x00FFFFFF, 0x20000000},
-                new float[]{0f, 0.20f, 0.46f, 0.78f, 1f}, Shader.TileMode.CLAMP);
+                new int[]{0x26000000, 0x00000000, 0x00000000, 0x1C000000},
+                new float[]{0f, 0.35f, 0.80f, 1f}, Shader.TileMode.CLAMP);
         flapShade.setShader(flapGrad);
+        int[] light = new int[33];
+        float[] at = new float[light.length];
+        for (int i = 0; i < light.length; i++) {
+            at[i] = i / (float) (light.length - 1);
+            light[i] = rollShade(PI * at[i]);
+        }
+        rollGrad = new LinearGradient(0, 0, 1, 0, light, at, Shader.TileMode.CLAMP);
 
         taps = new GestureDetector(c, new TapListener());
         taps.setIsLongpressEnabled(false);
@@ -205,6 +250,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
         bgPaint.setColor(bg);
         int flap = Themes.blend(bg, fg, 0.10f);
         flapPaint.setColorFilter(Themes.washed(theme, warmth, flap, 0.88f));
+        rollBackPaint.setColorFilter(flapPaint.getColorFilter());
         flapTint.setColor(flap);
         footer.setColor((fg & 0x00FFFFFF) | 0x99000000);
         invalidate();
@@ -271,6 +317,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
             if (listener != null) listener.onEdge(dir);
             return;
         }
+        if (listener != null) listener.onTurn();
         if (!animated || animMode == ANIM_NONE || cache.get(target) == null || cache.get(cur) == null) {
             setCur(target, dir);
             return;
@@ -282,7 +329,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
         float from = dir > 0 ? w : -w;
         tx = from;
         ty = cy;
-        startSettle(from, cy, -from, cy, !straight, true, animMode == ANIM_SLIDE ? 280 : 420);
+        startSettle(from, cy, -from, cy, !straight, true, animMode == ANIM_SLIDE ? 300 : 560);
     }
 
     @Override
@@ -295,6 +342,16 @@ final class ReaderView extends View implements PdfEngine.Callback {
         ribbonPath.lineTo(x + rw / 2f, rh - 8 * dp);
         ribbonPath.lineTo(x, rh);
         ribbonPath.close();
+        // A page with a note gets a small folded tab at the other top corner.
+        notePath.reset();
+        float nx0 = 30 * dp, nw = 22 * dp, nh = 26 * dp;
+        notePath.moveTo(nx0, 0);
+        notePath.lineTo(nx0 + nw, 0);
+        notePath.lineTo(nx0 + nw, nh - 8 * dp);
+        notePath.lineTo(nx0 + nw - 8 * dp, nh);
+        notePath.lineTo(nx0, nh);
+        notePath.close();
+        maxRadius = 0.10f * Math.min(w, h);
         relayout();
     }
 
@@ -432,6 +489,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
             }
         }
         if (bookmarked(screen)) c.drawPath(ribbonPath, ribbon);
+        if (noted(screen)) c.drawPath(notePath, notePaint);
         drawFooter(c, screen);
     }
 
@@ -455,10 +513,19 @@ final class ReaderView extends View implements PdfEngine.Callback {
     }
 
     /**
-     * Draws a turn in progress. Each region is filled as an exact polygon textured with the page
-     * image rather than as a whole-screen image cut down by a rotated clip: with a rotated clip
-     * the GPU still shades every pixel of every layer and throws most of them away, which this
-     * tablet's GPU cannot do at 60 frames a second.
+     * Draws a turn in progress as a sheet rolling over a cylinder, which is what paper does: the
+     * page leaves the book along a straight line, wraps half-way round a roll of radius r, and
+     * the rest lies flat on top, face down. Because the roll's axis is straight, everything
+     * depends only on the distance u past that line, so the roll is drawn as narrow bands
+     * parallel to the axis, each squeezed to the width it shows at its angle (and flipped once
+     * past the top). A band is one textured polygon, so the GPU only shades pixels that end up
+     * visible; rotated clips would make it shade the whole screen for every layer.
+     *
+     * In the crease frame (origin at the midpoint of corner C and its target T, +x toward T):
+     *   x >= half             the sheet still lies flat
+     *   -half <= x <= half    wrapped on the roll, landing at half - r*sin(u/r), u = half - x
+     *   x <= -half            flat on top, mirrored about x = 0, which carries C exactly onto T
+     * where half = r*pi/2.
      */
     private void drawCurl(Canvas c, int top, int bottom) {
         final float w = getWidth(), h = getHeight();
@@ -468,38 +535,97 @@ final class ReaderView extends View implements PdfEngine.Callback {
             drawPage(c, top);
             return;
         }
-        // Crease-local frame: origin at the midpoint of C-T, +x pointing from the corner to T.
-        final float nx = dx / d, ny = dy / d;
-        final float mx = (w + tx) / 2f, my = (cy + ty) / 2f;
+        fNx = dx / d;
+        fNy = dy / d;
+        fMx = (w + tx) / 2f;
+        fMy = (cy + ty) / 2f;
+        final float mx = fMx, my = fMy;
         final float ang = (float) Math.toDegrees(Math.atan2(dy, dx));
         final float big = (w + h) * 2f;
 
+        // The roll grows as the corner is pulled, up to a comfortable size, and flattens again
+        // as it reaches the spine: the sheet must never lift off along the spine itself.
+        float room = Math.min(-mx * fNx - my * fNy, -mx * fNx + (h - my) * fNy);
+        float r = Math.min(Math.min(maxRadius, 0.27f * d), 2f * room / PI);
+        if (r < 2f) r = 0f;
+        final float half = r * PI / 2f;
+        final float edge = half - r;
+
         setQuad(quad, 0, 0, w, 0, w, h, 0, h);
 
-        // The page underneath shows on the lifted corner's side of the crease. It is grown two
-        // pixels past the crease so nothing can show through the seam; the sheet covers the excess.
-        if (toPath(pathA, poly, clipToCrease(quad, 4, mx, my, nx, ny, -1f, 2f, poly))) {
+        // The page underneath shows beyond the roll's outline. It is drawn right up to where the
+        // sheet lies flat: on a tilted turn the roll does not quite cover that strip at the page's
+        // edge, and nothing else would paint there.
+        if (toPath(pathA, poly, cut(quad, 4, half + 2f, -1f, poly))) {
             fillPage(c, pathA, bottom);
-            drawOverlays(c, bottom, mx, my, ang, false);
+            drawOverlays(c, bottom, mx + edge * fNx, my + edge * fNy, ang, false);
         }
 
-        // Shadow the lifted sheet casts on the page underneath, along the crease.
+        // Shadow the roll casts on the page underneath: full strength below the roll itself,
+        // fading out beyond its outline.
+        float reach = clamp(d * 0.20f, 8 * dp, 56 * dp) + 0.5f * r;
         c.save();
         c.translate(mx, my);
         c.rotate(ang);
-        c.scale(clamp(d * 0.20f, 8 * dp, 56 * dp), 1f);
-        c.drawRect(-1f, -big, 0f, big, foldShadow);
+        c.translate(edge, 0f);
+        c.scale(reach, 1f);
+        c.drawRect(-1f, -big, r / reach, big, foldShadow);
         c.restore();
 
-        // The part of the sheet still lying flat is the far side of the crease.
-        if (toPath(pathA, poly, clipToCrease(quad, 4, mx, my, nx, ny, 1f, 0f, poly))) {
+        // The part of the sheet still lying flat.
+        if (toPath(pathA, poly, cut(quad, 4, half, 1f, poly))) {
             fillPage(c, pathA, top);
-            drawOverlays(c, top, mx, my, ang, true);
+            drawOverlays(c, top, mx + half * fNx, my + half * fNy, ang, true);
         }
 
-        // The lifted part of the page, in page coordinates. Drawn through a mirror across the
-        // crease it becomes the folded-over flap.
-        if (!toPath(pathA, poly, clipToCrease(quad, 4, mx, my, nx, ny, -1f, 0f, poly))) return;
+        final BitmapShader sheet = shaders.get(top);
+
+        // One gradient shades the whole roll. It is laid out along the sheet before rolling (from
+        // where it leaves the page to where it lies flat again), so each band picks up exactly
+        // its own stretch of it and the light changes smoothly across band edges.
+        if (r > 0f) {
+            shaderMatrix.setScale(-2f * half, 1f);
+            shaderMatrix.postTranslate(half, 0f);
+            shaderMatrix.postRotate(ang);
+            shaderMatrix.postTranslate(mx, my);
+            rollGrad.setLocalMatrix(shaderMatrix);
+            shadePaint.setShader(rollGrad);
+        }
+
+        // The roll, lowest band first so each one covers the one beneath it.
+        for (int i = 0; r > 0f && i < ROLL_FRONT + ROLL_BACK; i++) {
+            boolean back = i >= ROLL_FRONT;
+            float a0 = back ? PI / 2f * (1f + (i - ROLL_FRONT) / (float) ROLL_BACK) : PI / 2f * i / ROLL_FRONT;
+            float a1 = back ? PI / 2f * (1f + (i - ROLL_FRONT + 1) / (float) ROLL_BACK) : PI / 2f * (i + 1) / ROLL_FRONT;
+            float x0 = half - r * a0, x1 = half - r * a1;
+            float land0 = half - r * (float) Math.sin(a0), land1 = half - r * (float) Math.sin(a1);
+            float k = (land1 - land0) / (x1 - x0);
+            // Reach back under the previous band by about a pixel and a half of screen.
+            float lap = Math.min(x0 - x1, 1.5f / Math.max(Math.abs(k), 0.05f));
+            int n = cut(quad, 4, x0 + lap, -1f, poly2);
+            if (!toPath(pathB, poly, cut(poly2, n, x1, 1f, poly))) continue;
+            c.save();
+            c.translate(mx, my);
+            c.rotate(ang);
+            c.translate(land0, 0f);
+            c.scale(k, 1f);
+            c.translate(-x0, 0f);
+            c.rotate(-ang);
+            c.translate(-mx, -my);
+            if (sheet != null) {
+                Paint p = back ? rollBackPaint : fillPaint;
+                p.setShader(sheet);
+                c.drawPath(pathB, p);
+            } else {
+                c.drawPath(pathB, back ? flapTint : bgPaint);
+            }
+            c.drawPath(pathB, shadePaint);
+            c.restore();
+        }
+
+        // The rest of the lifted sheet lies flat on top, face down: page coordinates drawn
+        // through a mirror about the crease frame's origin.
+        if (!toPath(pathA, poly, cut(quad, 4, -half + (r > 0f ? 1.5f : 0f), -1f, poly))) return;
         c.save();
         c.translate(mx, my);
         c.rotate(ang);
@@ -507,11 +633,11 @@ final class ReaderView extends View implements PdfEngine.Callback {
         c.rotate(-ang);
         c.translate(-mx, -my);
 
-        // Soft shadows just outside the flap's free edges, each cut off where the crease crosses
-        // it. They stop at the corner: overlapping past it would leave a dark square.
+        // Soft shadows just outside its free edges, each cut off where the sheet meets the roll.
+        // They stop at the corner: overlapping past it would leave a dark square.
         float es = clamp(d * 0.10f, 4 * dp, 28 * dp);
         setQuad(quad, w, 0, w + es, 0, w + es, h, w, h);
-        if (toPath(pathB, poly, clipToCrease(quad, 4, mx, my, nx, ny, -1f, 0f, poly))) {
+        if (toPath(pathB, poly, cut(quad, 4, -half, -1f, poly))) {
             shaderMatrix.setScale(es, 1f);
             shaderMatrix.postTranslate(w, 0f);
             fillGradient(c, pathB, edgeShadowH, edgeGradH);
@@ -525,13 +651,12 @@ final class ReaderView extends View implements PdfEngine.Callback {
                 setQuad(quad, 0, -es, w, -es, w, 0, 0, 0);
                 shaderMatrix.setScale(1f, -es);
             }
-            if (toPath(pathB, poly, clipToCrease(quad, 4, mx, my, nx, ny, -1f, 0f, poly))) {
+            if (toPath(pathB, poly, cut(quad, 4, -half, -1f, poly))) {
                 fillGradient(c, pathB, edgeShadowV, edgeGradV);
             }
         }
 
         // The back of the sheet: the page's own content mirrored, washed out to paper colour.
-        BitmapShader sheet = shaders.get(top);
         if (sheet != null) {
             flapPaint.setShader(sheet);
             c.drawPath(pathA, flapPaint);
@@ -539,12 +664,41 @@ final class ReaderView extends View implements PdfEngine.Callback {
             c.drawPath(pathA, flapTint);
         }
 
-        // Shade across the flap, crease to free edge, so it reads as a curve.
-        shaderMatrix.setScale(-Math.max(1f, d / 2f), 1f);
+        // Light falling off from where it leaves the roll out to its free edge.
+        shaderMatrix.setScale(-Math.max(1f, d / 2f - half), 1f);
+        shaderMatrix.postTranslate(-half, 0f);
         shaderMatrix.postRotate(ang);
         shaderMatrix.postTranslate(mx, my);
         fillGradient(c, pathA, flapShade, flapGrad);
         c.restore();
+    }
+
+    /** Cuts a polygon along the line x = const of the current crease frame; side -1 keeps x <= const. */
+    private int cut(float[] in, int n, float x, float side, float[] out) {
+        return clipToCrease(in, n, fMx + x * fNx, fMy + x * fNy, fNx, fNy, side, 0f, out);
+    }
+
+    /**
+     * Light on the roll at angle a (0 where the sheet leaves the page, pi where it lies flat on
+     * top): the face darkens as it turns away, the back comes out of shadow through a highlight.
+     */
+    private static int rollShade(float a) {
+        float black, white = 0f;
+        if (a <= PI / 2f) {
+            float t = 1f - (float) Math.cos(a);
+            black = 0.46f * t * (float) Math.sqrt(t);
+        } else {
+            float t = (a - PI / 2f) / (PI / 2f);
+            if (t < 0.30f) {
+                black = 0.40f * (1f - t / 0.30f);
+            } else if (t < 0.75f) {
+                black = 0f;
+                white = 0.20f * (float) Math.sin(Math.PI * (t - 0.30f) / 0.45f);
+            } else {
+                black = 0.15f * (t - 0.75f) / 0.25f;
+            }
+        }
+        return white > 0f ? (Math.round(white * 255f) << 24) | 0xFFFFFF : Math.round(black * 255f) << 24;
     }
 
     private void fillPage(Canvas c, Path path, int screen) {
@@ -575,6 +729,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
         c.rotate(-ang);
         c.translate(-mx, -my);
         if (bookmarked(screen)) c.drawPath(ribbonPath, ribbon);
+        if (noted(screen)) c.drawPath(notePath, notePaint);
         drawFooter(c, screen);
         c.restore();
     }
@@ -663,6 +818,13 @@ final class ReaderView extends View implements PdfEngine.Callback {
         return (min / 60) + " h " + (min % 60) + " min left";
     }
 
+    private boolean noted(int screen) {
+        if (book == null || book.notes.isEmpty() || screen < 0 || screen >= layout.screenCount()) return false;
+        int first = layout.firstPage(screen);
+        for (int i = 0; i < layout.pagesOn(screen); i++) if (book.notes.containsKey(first + i)) return true;
+        return false;
+    }
+
     private boolean bookmarked(int screen) {
         if (book == null || book.bookmarks.isEmpty() || screen < 0 || screen >= layout.screenCount()) return false;
         int first = layout.firstPage(screen);
@@ -729,6 +891,7 @@ final class ReaderView extends View implements PdfEngine.Callback {
         else if (tDir > 0) complete = vx < -flingMin || (progress > 0.33f && vx < flingMin);
         else complete = vx > flingMin || (progress > 0.33f && vx > -flingMin);
         float endX = (tDir > 0) == complete ? -w : w;
+        if (complete && listener != null) listener.onTurn();
         startSettle(tx, ty, endX, cy, false, complete, (long) (140 + 260 * Math.abs(endX - tx) / (2f * w)));
     }
 
@@ -740,7 +903,8 @@ final class ReaderView extends View implements PdfEngine.Callback {
         anim = ValueAnimator.ofFloat(0f, 1f);
         // The system-wide animation speed setting would otherwise rush the page turn.
         anim.setDuration(animScale > 0.01f ? (long) (ms / animScale) : ms);
-        anim.setInterpolator(arc ? new AccelerateDecelerateInterpolator() : new DecelerateInterpolator(1.5f));
+        // A tapped turn leaves quickly and lands softly, like a page thrown over by a thumb.
+        anim.setInterpolator(arc ? new PathInterpolator(0.30f, 0.05f, 0.20f, 1f) : new DecelerateInterpolator(1.5f));
         anim.addUpdateListener(a -> {
             float f = (float) a.getAnimatedValue();
             tx = sx + (ex - sx) * f;
@@ -823,14 +987,23 @@ final class ReaderView extends View implements PdfEngine.Callback {
             finishAnimNow();
             downX = lastX = x;
             downY = lastY = y;
-            dragging = multi = tapUsed = false;
+            dragging = multi = tapUsed = riffled = false;
             swipeDir = 0;
+            removeCallbacks(riffle);
+            riffleDir = (zoom == 1f && !menuOpen) ? zoneOf(x) : 0;
+            if (riffleDir != 0) postDelayed(riffle, 500);
             if (vt == null) vt = VelocityTracker.obtain();
             else vt.clear();
         }
         scaler.onTouchEvent(e);
         taps.onTouchEvent(e);
         if (vt != null) vt.addMovement(e);
+        // Riffling needs a finger held still on the edge; anything else calls it off.
+        if (action != MotionEvent.ACTION_DOWN && riffleDir != 0 && (action != MotionEvent.ACTION_MOVE
+                || Math.abs(x - downX) > slop || Math.abs(y - downY) > slop)) {
+            removeCallbacks(riffle);
+            riffleDir = 0;
+        }
 
         switch (action) {
             case MotionEvent.ACTION_POINTER_DOWN:
@@ -886,6 +1059,11 @@ final class ReaderView extends View implements PdfEngine.Callback {
         // Edge taps turn the page on finger-up, with no double-tap wait, so flipping feels instant.
         @Override
         public boolean onSingleTapUp(MotionEvent e) {
+            if (riffled) {
+                // Letting go after a riffle is not a tap.
+                tapUsed = true;
+                return true;
+            }
             if (menuOpen) {
                 tapUsed = true;
                 if (listener != null) listener.onCenterTap();
