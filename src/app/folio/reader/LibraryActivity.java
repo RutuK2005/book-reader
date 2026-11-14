@@ -153,11 +153,6 @@ public class LibraryActivity extends Activity {
             }
         }
 
-        TextView credit = text("MyBookSpace  ·  designed and built by Rutuparn K", 12, dim, false);
-        credit.setGravity(Gravity.CENTER);
-        credit.setOnClickListener(v -> about());
-        page.addView(credit, top(MATCH, WRAP, 44));
-
         final int keepY = scroll == null ? 0 : scroll.getScrollY();
         scrollSpeed = 0;
         scroll = new ScrollView(this);
@@ -606,14 +601,6 @@ public class LibraryActivity extends Activity {
                                 .show();
                     }
                 })
-                .show();
-    }
-
-    private void about() {
-        new AlertDialog.Builder(this)
-                .setTitle("MyBookSpace")
-                .setMessage("A small, fast PDF book reader.\n\nDesigned and built by Rutuparn K.\n\ngithub.com/RutuK2005/book-reader")
-                .setPositiveButton("Close", null)
                 .show();
     }
 

@@ -74,7 +74,3 @@ install over older versions.
 
 `PdfRenderer` gives pixels, not text, so there is no text search, text reflow or table of
 contents; highlights mark an area rather than words; and password-protected PDFs cannot be opened.
-
----
-
-Made by Rutuparn K · [github.com/RutuK2005](https://github.com/RutuK2005)
