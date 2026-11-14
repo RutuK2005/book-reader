@@ -148,7 +148,19 @@ public class LibraryActivity extends Activity {
             TextView heading = text(filterTitle() + "   " + shown.size(), 13, dim, false);
             heading.setAllCaps(true);
             heading.setLetterSpacing(0.08f);
-            page.addView(heading, top(WRAP, WRAP, 18));
+            // Covers only: hides every book's title and details for a cleaner shelf.
+            final boolean coversOnly = prefs.getBoolean("covers_only", false);
+            LinearLayout headRow = new LinearLayout(this);
+            headRow.setGravity(Gravity.CENTER_VERTICAL);
+            headRow.addView(heading, new LinearLayout.LayoutParams(0, WRAP, 1f));
+            TextView mode = text(coversOnly ? "Show titles" : "Covers only", 13, ACCENT, false);
+            mode.setPadding(d(10), d(6), 0, d(6));
+            mode.setOnClickListener(v -> {
+                prefs.edit().putBoolean("covers_only", !coversOnly).apply();
+                build();
+            });
+            headRow.addView(mode);
+            page.addView(headRow, top(MATCH, WRAP, 12));
             if (shown.isEmpty()) {
                 page.addView(message(filter.equals(READING) ? "Nothing in progress. Open a book to start reading."
                         : filter.equals(FINISHED) ? "No finished books yet."
@@ -401,6 +413,12 @@ public class LibraryActivity extends Activity {
         TextView s = text(sub, 12, dim, false);
         s.setMaxLines(2);
         c.addView(s, top(MATCH, WRAP, 2));
+        c.setContentDescription(b.title);
+        if (prefs.getBoolean("covers_only", false)) {
+            line.setVisibility(View.GONE);
+            title.setVisibility(View.GONE);
+            s.setVisibility(View.GONE);
+        }
         c.setOnClickListener(v -> openBook(b));
         // Hold a book and drag it onto another to move it there. Letting go where it started
         // opens its menu instead.
