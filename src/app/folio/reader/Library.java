@@ -258,6 +258,8 @@ final class Library {
                 if (!f.renameTo(src)) throw new IOException("Couldn't store that file");
                 b.converted = true;
                 b.textSize = Convert.DEFAULT_SIZE;
+                // These pages are set with their own margins; cropping would push text to the screen edge.
+                b.cropDone = true;
                 String own = Convert.toPdf(src, name, f, b.textSize);
                 if (own != null && !own.isEmpty()) b.title = own;
             }
@@ -312,7 +314,7 @@ final class Library {
                 b.bookmarks.clear();
                 b.notes.clear();
                 b.highlights.clear();
-                b.cropDone = false;
+                b.cropDone = true;
                 b.cropEven = b.cropOdd = null;
                 b.secPerPage = 0;
                 b.samples = 0;

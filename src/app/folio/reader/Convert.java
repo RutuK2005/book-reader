@@ -38,10 +38,10 @@ import java.util.zip.ZipFile;
  */
 final class Convert {
     /** Page size and margins in points: a 6 x 9 inch book page. */
-    private static final float PAGE_W = 432, PAGE_H = 648, MARGIN_X = 44, MARGIN_Y = 50;
-    static final float[] SIZES = {10f, 11.5f, 13f, 15f, 17.5f};
+    private static final float PAGE_W = 432, PAGE_H = 648, MARGIN_X = 38, MARGIN_Y = 46;
+    static final float[] SIZES = {10.5f, 12f, 13.5f, 15.5f, 18f};
     static final String[] SIZE_NAMES = {"Small", "Medium", "Large", "Extra large", "Huge"};
-    static final float DEFAULT_SIZE = 11.5f;
+    static final float DEFAULT_SIZE = 12f;
 
     static boolean isPdf(File f) {
         return startsWith(f, '%', 'P', 'D', 'F');
@@ -61,7 +61,7 @@ final class Convert {
         if (startsWith(src, 'P', 'K')) return epub(src, out, textSize);
         if (name.toLowerCase().endsWith(".txt")) {
             Pages pages = new Pages(out, textSize);
-            pages.chapter(new String(readAll(new FileInputStream(src)), StandardCharsets.UTF_8));
+            pages.chapter(bookStyle(new android.text.SpannedString(new String(readAll(new FileInputStream(src)), StandardCharsets.UTF_8)), textSize * 1.5f));
             pages.finish();
             return null;
         }
@@ -103,11 +103,53 @@ final class Convert {
                         .replaceAll("(?is)<(style|script)[^>]*>.*?</\\1>", "")
                         // Covers are often an SVG wrapper around one picture; treat it as a plain image.
                         .replaceAll("(?is)<image\\b[^>]*?href\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>", "<img src=\"$1\"/>");
-                pages.chapter(Html.fromHtml(body, Html.FROM_HTML_MODE_LEGACY, source -> picture(zip, dirOf(path), source), null));
+                pages.chapter(bookStyle(Html.fromHtml(body, Html.FROM_HTML_MODE_LEGACY, source -> picture(zip, dirOf(path), source), null), textSize * 1.5f));
             }
             pages.finish();
             return title;
         }
+    }
+
+    /**
+     * Sets converted text the way a printed book is set, rather than a web page: paragraphs run
+     * on with a first-line indent instead of a blank line between them, and headings and pictures
+     * are centred with space around them. The paragraph after a heading is not indented.
+     */
+    private static CharSequence bookStyle(android.text.Spanned html, float indent) {
+        android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder(html);
+        for (int i = sb.length() - 1; i > 0; i--) {
+            if (sb.charAt(i) == '\n' && sb.charAt(i - 1) == '\n') sb.delete(i, i + 1);
+        }
+        int start = 0;
+        boolean fresh = true;
+        while (start < sb.length()) {
+            int end = TextUtils.indexOf(sb, '\n', start);
+            if (end < 0) end = sb.length();
+            if (end > start) {
+                boolean heading = false;
+                for (android.text.style.RelativeSizeSpan s : sb.getSpans(start, start + 1, android.text.style.RelativeSizeSpan.class)) {
+                    heading |= s.getSizeChange() > 1.05f;
+                }
+                boolean picture = sb.getSpans(start, end, android.text.style.ImageSpan.class).length > 0;
+                if (heading || picture) {
+                    if (start > 0) {
+                        sb.insert(start, "\n");
+                        start++;
+                        end++;
+                    }
+                    sb.setSpan(new android.text.style.AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER),
+                            start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    sb.insert(end, "\n");
+                    end++;
+                } else if (!fresh) {
+                    sb.setSpan(new android.text.style.LeadingMarginSpan.Standard(Math.round(indent), 0),
+                            start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+                fresh = heading || picture;
+            }
+            start = end + 1;
+        }
+        return sb;
     }
 
     /** Loads a picture from inside the EPUB, sized to fit within a page. */
@@ -159,7 +201,8 @@ final class Convert {
             int width = (int) (PAGE_W - 2 * MARGIN_X);
             float height = PAGE_H - 2 * MARGIN_Y;
             StaticLayout layout = StaticLayout.Builder.obtain(text, start, end, paint, width)
-                    .setLineSpacing(0f, 1.32f)
+                    .setLineSpacing(0f, 1.36f)
+                    .setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD)
                     .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY)
                     .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NORMAL)
                     .build();
