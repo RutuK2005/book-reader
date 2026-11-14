@@ -10,7 +10,11 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Bundle;
@@ -26,6 +30,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -33,6 +38,7 @@ import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -546,10 +552,9 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
 
     private void stylePill(TextView t, boolean on) {
         GradientDrawable g = new GradientDrawable();
-        g.setCornerRadius(d(18));
-        if (on) g.setColor(ACCENT);
-        else g.setStroke(d(1), 0xFF6A6A6A);
-        t.setBackground(g);
+        g.setCornerRadius(d(14));
+        g.setColor(on ? ACCENT : 0xFF2F2F33);
+        t.setBackground(new RippleDrawable(ColorStateList.valueOf(0x40FFFFFF), g, null));
         t.setTextColor(on ? 0xFF1B1B1D : TEXT);
     }
 
@@ -714,9 +719,9 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         menuVisible = show;
         view.menuOpen = show;
         if (show) refreshMenu();
-        topBar.setVisibility(show ? View.VISIBLE : View.GONE);
+        slide(topBar, show, -1);
+        slide(bottomPanel, show, 1);
         markBar.setVisibility(view.marking && !show ? View.VISIBLE : View.GONE);
-        bottomPanel.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     private void refreshMenu() {
@@ -737,37 +742,53 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         // Sized to the longest row label at the user's font scale, so labels never wrap.
         final int labelW = (int) Math.ceil(label(mc, "", 14, DIM).getPaint().measureText("Brightness")) + d(16);
 
+        // ---- top bar: back, title, marks list, bookmark
         LinearLayout top = new LinearLayout(mc);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setBackgroundColor(PANEL);
-        top.setPadding(d(6), d(4), d(6), d(4));
+        top.setPadding(d(4), d(2), d(8), d(2));
         top.setClickable(true);
-        top.addView(barButton(mc, "‹  Library", v -> finish()));
+        top.setElevation(d(6));
+        top.addView(new Icon(mc, Icon.BACK, v -> finish()), new LinearLayout.LayoutParams(d(48), d(48)));
         titleView = new TextView(mc);
         titleView.setTextColor(TEXT);
         titleView.setTextSize(16);
         titleView.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
         titleView.setSingleLine(true);
         titleView.setEllipsize(TextUtils.TruncateAt.END);
-        titleView.setGravity(Gravity.CENTER);
+        titleView.setPadding(d(4), 0, d(8), 0);
         top.addView(titleView, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        top.addView(barButton(mc, "Go to page", v -> goToDialog()));
-        top.addView(barButton(mc, "Bookmarks", v -> bookmarksDialog()));
+        top.addView(new Icon(mc, Icon.LIST, v -> bookmarksDialog()), new LinearLayout.LayoutParams(d(48), d(48)));
         starBtn = barButton(mc, "☆", v -> toggleBookmark());
         starBtn.setTextSize(24);
         top.addView(starBtn);
         root.addView(top, new FrameLayout.LayoutParams(MATCH, WRAP, Gravity.TOP));
         topBar = top;
 
+        // ---- bottom sheet
         LinearLayout bot = new LinearLayout(mc);
         bot.setOrientation(LinearLayout.VERTICAL);
-        bot.setBackgroundColor(PANEL);
-        bot.setPadding(d(22), d(14), d(22), d(16));
-        bot.setClickable(true);
+        bot.setPadding(d(20), d(12), d(20), d(18));
+        View handle = new View(mc);
+        GradientDrawable hb = new GradientDrawable();
+        hb.setColor(0xFF4C4C50);
+        hb.setCornerRadius(d(2));
+        handle.setBackground(hb);
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(d(36), d(4));
+        hlp.gravity = Gravity.CENTER_HORIZONTAL;
+        hlp.bottomMargin = d(12);
+        bot.addView(handle, hlp);
 
-        pageLabel = label(mc, "", 14, TEXT);
-        pageLabel.setGravity(Gravity.CENTER);
-        bot.addView(pageLabel, new LinearLayout.LayoutParams(MATCH, WRAP));
+        LinearLayout pageRow = row(mc);
+        pageLabel = label(mc, "", 15, TEXT);
+        pageLabel.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        pageRow.addView(pageLabel, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        TextView go = pill(mc, v -> goToDialog());
+        go.setText("Go to page");
+        go.setPadding(d(16), d(7), d(16), d(7));
+        stylePill(go, false);
+        pageRow.addView(go, new LinearLayout.LayoutParams(WRAP, WRAP));
+        bot.addView(pageRow, new LinearLayout.LayoutParams(MATCH, WRAP));
         pageSeek = seek(mc);
         pageSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -790,6 +811,33 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         });
         bot.addView(pageSeek, rowParams(6));
 
+        // ---- tabs: the settings are grouped so only a handful show at a time
+        final String[] names = {"Display", "Layout", "Tools", "More"};
+        final TextView[] tabs = new TextView[names.length];
+        final LinearLayout[] panels = new LinearLayout[names.length];
+        LinearLayout tabRow = row(mc);
+        GradientDrawable tabBg = new GradientDrawable();
+        tabBg.setColor(0xFF2B2B2E);
+        tabBg.setCornerRadius(d(14));
+        tabRow.setBackground(tabBg);
+        tabRow.setPadding(d(3), d(3), d(3), d(3));
+        FrameLayout content = new FrameLayout(mc);
+        for (int i = 0; i < names.length; i++) {
+            final int index = i;
+            tabs[i] = label(mc, names[i], 14, DIM);
+            tabs[i].setGravity(Gravity.CENTER);
+            tabs[i].setPadding(0, d(9), 0, d(9));
+            tabs[i].setOnClickListener(v -> selectTab(tabs, panels, index));
+            tabRow.addView(tabs[i], new LinearLayout.LayoutParams(0, WRAP, 1f));
+            panels[i] = new LinearLayout(mc);
+            panels[i].setOrientation(LinearLayout.VERTICAL);
+            content.addView(panels[i], new FrameLayout.LayoutParams(MATCH, WRAP));
+        }
+        bot.addView(tabRow, rowParams(12));
+        bot.addView(content, rowParams(6));
+        LinearLayout display = panels[0], layoutTab = panels[1], tools = panels[2], more = panels[3];
+
+        // ---- Display: theme, page turn, brightness, warmth
         LinearLayout themes = row(mc);
         themes.setGravity(Gravity.CENTER);
         for (int i = 0; i < Themes.COUNT; i++) {
@@ -809,14 +857,14 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             themes.addView(sw, lp);
             swatches[i] = sw;
         }
-        bot.addView(themes, rowParams(12));
+        display.addView(themes, rowParams(10));
 
         LinearLayout turn = row(mc);
         turn.addView(label(mc, "Page turn", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
-        String[] names = {"Curl", "Slide", "None"};
+        String[] modes = {"Curl", "Slide", "None"};
         for (int i = 0; i < 3; i++) {
             final int mode = i;
-            TextView b = label(mc, names[i], 14, TEXT);
+            TextView b = label(mc, modes[i], 14, TEXT);
             b.setGravity(Gravity.CENTER);
             b.setPadding(0, d(8), 0, d(8));
             b.setOnClickListener(v -> {
@@ -830,7 +878,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             animBtns[i] = b;
         }
         styleAnimButtons();
-        bot.addView(turn, rowParams(14));
+        display.addView(turn, rowParams(16));
 
         LinearLayout bright = row(mc);
         bright.addView(label(mc, "Brightness", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
@@ -840,7 +888,6 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         brightSeek.setProgress(saved < 0f ? 50 : Math.round(saved * 100));
         brightSeek.setEnabled(saved >= 0f);
         brightSeek.setAlpha(saved >= 0f ? 1f : 0.35f);
-        final CheckBox auto = check(mc, "System", saved < 0f);
         brightSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
@@ -857,15 +904,16 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             public void onStopTrackingTouch(SeekBar s) {
             }
         });
+        bright.addView(brightSeek, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        display.addView(bright, rowParams(14));
+        Switch auto = toggle(mc, "Use the tablet's brightness", saved < 0f);
         auto.setOnCheckedChangeListener((v, on) -> {
             prefs.edit().putFloat(P.BRIGHT, on ? -1f : brightSeek.getProgress() / 100f).apply();
             brightSeek.setEnabled(!on);
             brightSeek.setAlpha(on ? 0.35f : 1f);
             applyBrightness();
         });
-        bright.addView(brightSeek, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        bright.addView(auto);
-        bot.addView(bright, rowParams(10));
+        display.addView(auto, rowParams(2));
 
         LinearLayout warm = row(mc);
         warm.addView(label(mc, "Warmth", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
@@ -889,59 +937,26 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             }
         });
         warm.addView(warmSeek, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        bot.addView(warm, rowParams(6));
+        display.addView(warm, rowParams(8));
 
-        LinearLayout checksA = row(mc), checksB = row(mc);
-        CheckBox crop = check(mc, "Crop margins", prefs.getBoolean(P.CROP, true));
+        // ---- Layout
+        Switch crop = toggle(mc, "Crop margins", prefs.getBoolean(P.CROP, true));
         crop.setOnCheckedChangeListener((v, on) -> setCrop(on));
-        CheckBox dual = check(mc, "Two pages in landscape", prefs.getBoolean(P.DUAL, true));
+        Switch dual = toggle(mc, "Two pages in landscape", prefs.getBoolean(P.DUAL, true));
         dual.setOnCheckedChangeListener((v, on) -> {
             prefs.edit().putBoolean(P.DUAL, on).apply();
             if (ready) view.setDual(on);
         });
-        CheckBox vol = check(mc, "Volume keys turn pages", prefs.getBoolean(P.VOLKEYS, true));
+        Switch vol = toggle(mc, "Volume keys turn pages", prefs.getBoolean(P.VOLKEYS, true));
         vol.setOnCheckedChangeListener((v, on) -> prefs.edit().putBoolean(P.VOLKEYS, on).apply());
-        CheckBox clock = check(mc, "Clock and battery", prefs.getBoolean(P.CLOCK, true));
+        Switch clock = toggle(mc, "Clock and battery in the footer", prefs.getBoolean(P.CLOCK, true));
         clock.setOnCheckedChangeListener((v, on) -> {
             prefs.edit().putBoolean(P.CLOCK, on).apply();
             updateStatus();
         });
-        checksA.addView(crop, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        checksA.addView(dual, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        checksB.addView(vol, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        checksB.addView(clock, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        bot.addView(checksA, rowParams(10));
-        bot.addView(checksB, rowParams(2));
+        for (Switch s : new Switch[]{crop, dual, vol, clock}) layoutTab.addView(s, rowParams(4));
 
-        LinearLayout checksC = row(mc);
-        CheckBox sound = check(mc, "Page-turn sound", prefs.getBoolean(P.SOUND, true));
-        sound.setOnCheckedChangeListener((v, on) -> {
-            prefs.edit().putBoolean(P.SOUND, on).apply();
-            if (pageSound != null) pageSound.release();
-            pageSound = on && !saver() ? new PageSound() : null;
-            if (pageSound != null) pageSound.play();
-        });
-        CheckBox night = check(mc, "Night theme 9 pm – 6 am", prefs.getBoolean(P.AUTO_NIGHT, false));
-        night.setOnCheckedChangeListener((v, on) -> {
-            prefs.edit().putBoolean(P.AUTO_NIGHT, on).apply();
-            applyTheme();
-        });
-        checksC.addView(sound, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        checksC.addView(night, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        bot.addView(checksC, rowParams(2));
-
-        LinearLayout pills = row(mc);
-        autoBtn = pill(mc, v -> setAuto(next(AUTO_CHOICES, autoSec)));
-        sleepBtn = pill(mc, v -> setSleep(next(SLEEP_CHOICES, sleepMin)));
-        noteBtn = pill(mc, v -> noteDialog());
-        for (TextView p : new TextView[]{autoBtn, sleepBtn, noteBtn}) {
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
-            lp.setMargins(d(4), 0, d(4), 0);
-            pills.addView(p, lp);
-        }
-        bot.addView(pills, rowParams(12));
-
-        LinearLayout tools = row(mc);
+        // ---- Tools
         rulerBtn = pill(mc, v -> {
             view.rulerOn = !view.rulerOn;
             prefs.edit().putBoolean(P.RULER, view.rulerOn).apply();
@@ -958,14 +973,10 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
                 toast("Drag over a passage to highlight it. Tap a highlight to remove it.");
             }
         });
+        noteBtn = pill(mc, v -> noteDialog());
         dictBtn = pill(mc, v -> dictionaryDialog());
-        for (TextView p : new TextView[]{rulerBtn, markBtn, dictBtn}) {
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
-            lp.setMargins(d(4), 0, d(4), 0);
-            tools.addView(p, lp);
-        }
-        bot.addView(tools, rowParams(8));
-
+        tools.addView(pair(mc, rulerBtn, markBtn), rowParams(10));
+        tools.addView(pair(mc, noteBtn, dictBtn), rowParams(10));
         LinearLayout rulerRow = row(mc);
         rulerRow.addView(label(mc, "Ruler size", 14, DIM), new LinearLayout.LayoutParams(labelW, WRAP));
         SeekBar rulerSeek = seek(mc);
@@ -989,17 +1000,38 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             }
         });
         rulerRow.addView(rulerSeek, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        bot.addView(rulerRow, rowParams(8));
-        CheckBox saverBox = check(mc, "Extreme battery saver", prefs.getBoolean(P.SAVER, false));
+        tools.addView(rulerRow, rowParams(14));
+
+        // ---- More
+        autoBtn = pill(mc, v -> setAuto(next(AUTO_CHOICES, autoSec)));
+        sleepBtn = pill(mc, v -> setSleep(next(SLEEP_CHOICES, sleepMin)));
+        more.addView(pair(mc, autoBtn, sleepBtn), rowParams(10));
+        Switch sound = toggle(mc, "Page-turn sound", prefs.getBoolean(P.SOUND, true));
+        sound.setOnCheckedChangeListener((v, on) -> {
+            prefs.edit().putBoolean(P.SOUND, on).apply();
+            if (pageSound != null) pageSound.release();
+            pageSound = on && !saver() ? new PageSound() : null;
+            if (pageSound != null) pageSound.play();
+        });
+        Switch night = toggle(mc, "Night theme from 9 pm to 6 am", prefs.getBoolean(P.AUTO_NIGHT, false));
+        night.setOnCheckedChangeListener((v, on) -> {
+            prefs.edit().putBoolean(P.AUTO_NIGHT, on).apply();
+            applyTheme();
+        });
+        Switch saverBox = toggle(mc, "Extreme battery saver", prefs.getBoolean(P.SAVER, false));
         saverBox.setOnCheckedChangeListener((v, on) -> {
             prefs.edit().putBoolean(P.SAVER, on).apply();
             applySaver();
         });
-        bot.addView(saverBox, rowParams(8));
-        refreshPills();
+        more.addView(sound, rowParams(10));
+        more.addView(night, rowParams(4));
+        more.addView(saverBox, rowParams(4));
 
-        // The panel can be taller than a landscape screen at large font sizes, so it scrolls,
-        // and never takes more than three quarters of the height.
+        refreshPills();
+        selectTab(tabs, panels, Math.min(names.length - 1, prefs.getInt("menu_tab", 0)));
+
+        // The sheet scrolls if it is taller than a landscape screen at large font sizes, and
+        // never takes more than three quarters of the height.
         ScrollView scroller = new ScrollView(mc) {
             @Override
             protected void onMeasure(int wSpec, int hSpec) {
@@ -1007,29 +1039,39 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
                 super.onMeasure(wSpec, MeasureSpec.makeMeasureSpec(max, MeasureSpec.AT_MOST));
             }
         };
-        scroller.setBackgroundColor(PANEL);
+        GradientDrawable sheet = new GradientDrawable();
+        sheet.setColor(PANEL);
+        float r = d(22);
+        sheet.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
+        scroller.setBackground(sheet);
+        scroller.setClipToOutline(true);
+        scroller.setElevation(d(12));
+        scroller.setClickable(true);
         scroller.addView(bot, new FrameLayout.LayoutParams(MATCH, WRAP));
         root.addView(scroller, new FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM));
         bottomPanel = scroller;
 
         // Shown while highlighting: take back the last highlight, or finish.
         LinearLayout bar = new LinearLayout(mc);
-        bar.setPadding(d(6), d(6), d(6), d(6));
+        bar.setPadding(d(6), d(4), d(6), d(4));
         GradientDrawable barBg = new GradientDrawable();
         barBg.setColor(PANEL);
-        barBg.setCornerRadius(d(24));
+        barBg.setCornerRadius(d(26));
         bar.setBackground(barBg);
+        bar.setElevation(d(8));
         bar.addView(barButton(mc, "Undo highlight", v -> {
             if (!view.undoMark()) toast("Nothing to undo. Tap a highlight to remove it.");
         }));
-        bar.addView(barButton(mc, "Done", v -> {
+        TextView done = barButton(mc, "Done", v -> {
             view.marking = false;
             markBar.setVisibility(View.GONE);
             refreshPills();
-        }));
+        });
+        done.setTextColor(ACCENT);
+        bar.addView(done);
         bar.setVisibility(View.GONE);
         FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        barLp.topMargin = d(10);
+        barLp.topMargin = d(14);
         root.addView(bar, barLp);
         markBar = bar;
 
@@ -1040,9 +1082,9 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         thumbBox.setPadding(d(10), d(10), d(10), d(8));
         GradientDrawable box = new GradientDrawable();
         box.setColor(PANEL);
-        box.setCornerRadius(d(12));
+        box.setCornerRadius(d(14));
         thumbBox.setBackground(box);
-        thumbBox.setElevation(d(8));
+        thumbBox.setElevation(d(10));
         thumbImage = new ImageView(mc);
         thumbImage.setAdjustViewBounds(true);
         thumbImage.setBackgroundColor(0xFFFFFFFF);
@@ -1054,8 +1096,105 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         tlp.topMargin = d(90);
         root.addView(thumbBox, tlp);
+
         top.setVisibility(View.GONE);
         bottomPanel.setVisibility(View.GONE);
+    }
+
+    private void selectTab(TextView[] tabs, View[] panels, int index) {
+        prefs.edit().putInt("menu_tab", index).apply();
+        for (int i = 0; i < tabs.length; i++) {
+            boolean on = i == index;
+            panels[i].setVisibility(on ? View.VISIBLE : View.GONE);
+            GradientDrawable g = new GradientDrawable();
+            g.setCornerRadius(d(11));
+            g.setColor(on ? ACCENT : 0x00000000);
+            tabs[i].setBackground(g);
+            tabs[i].setTextColor(on ? 0xFF1B1B1D : DIM);
+            tabs[i].setTypeface(Typeface.create(on ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        }
+    }
+
+    /** Two buttons side by side, sharing the width. */
+    private LinearLayout pair(Context c, View a, View b) {
+        LinearLayout l = row(c);
+        LinearLayout.LayoutParams la = new LinearLayout.LayoutParams(0, WRAP, 1f);
+        la.rightMargin = d(5);
+        LinearLayout.LayoutParams lb = new LinearLayout.LayoutParams(0, WRAP, 1f);
+        lb.leftMargin = d(5);
+        l.addView(a, la);
+        l.addView(b, lb);
+        return l;
+    }
+
+    private Switch toggle(Context c, String text, boolean on) {
+        Switch s = new Switch(c);
+        s.setText(text);
+        s.setTextColor(TEXT);
+        s.setTextSize(14);
+        s.setChecked(on);
+        s.setPadding(0, d(7), 0, d(7));
+        int[][] states = {{android.R.attr.state_checked}, {}};
+        s.setThumbTintList(new ColorStateList(states, new int[]{ACCENT, 0xFFC4C4C4}));
+        s.setTrackTintList(new ColorStateList(states, new int[]{0x99E8A33D, 0x55FFFFFF}));
+        return s;
+    }
+
+    /** Slides a bar in from its edge, or back out. dir is -1 for the top edge, +1 for the bottom. */
+    private void slide(final View v, boolean show, int dir) {
+        v.animate().cancel();
+        if (show) {
+            if (v.getVisibility() != View.VISIBLE) {
+                v.setVisibility(View.VISIBLE);
+                v.setAlpha(0f);
+                v.setTranslationY(dir * d(60));
+            }
+            v.animate().translationY(0f).alpha(1f).setDuration(240).setInterpolator(new DecelerateInterpolator(2f)).withEndAction(null);
+        } else if (v.getVisibility() == View.VISIBLE) {
+            v.animate().translationY(dir * d(60)).alpha(0f).setDuration(180).withEndAction(() -> v.setVisibility(View.GONE));
+        }
+    }
+
+    /** Small line icons for the top bar, drawn rather than shipped as images. */
+    private static final class Icon extends View {
+        static final int BACK = 0, LIST = 1;
+        private final int kind;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+
+        Icon(Context c, int kind, OnClickListener l) {
+            super(c);
+            this.kind = kind;
+            paint.setColor(TEXT);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            android.util.TypedValue tv = new android.util.TypedValue();
+            c.getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, tv, true);
+            setBackgroundResource(tv.resourceId);
+            setContentDescription(kind == BACK ? "Back to library" : "Bookmarks and notes");
+            setOnClickListener(l);
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            float u = Math.min(getWidth(), getHeight()) / 24f, cx = getWidth() / 2f, cy = getHeight() / 2f;
+            paint.setStrokeWidth(1.9f * u);
+            path.rewind();
+            if (kind == BACK) {
+                path.moveTo(cx + 2.5f * u, cy - 5.5f * u);
+                path.lineTo(cx - 3f * u, cy);
+                path.lineTo(cx + 2.5f * u, cy + 5.5f * u);
+            } else {
+                for (int i = -1; i <= 1; i++) {
+                    path.moveTo(cx - 2.5f * u, cy + i * 4.5f * u);
+                    path.lineTo(cx + 6.5f * u, cy + i * 4.5f * u);
+                    path.moveTo(cx - 6.5f * u, cy + i * 4.5f * u);
+                    path.lineTo(cx - 6.4f * u, cy + i * 4.5f * u);
+                }
+            }
+            c.drawPath(path, paint);
+        }
     }
 
     private void styleSwatch(TextView sw, int theme, boolean selected) {
@@ -1072,9 +1211,8 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         int mode = prefs.getInt(P.ANIM, ReaderView.ANIM_CURL);
         for (int i = 0; i < animBtns.length; i++) {
             GradientDrawable g = new GradientDrawable();
-            g.setCornerRadius(d(18));
-            if (i == mode) g.setColor(ACCENT);
-            else g.setStroke(d(1), 0xFF6A6A6A);
+            g.setCornerRadius(d(14));
+            g.setColor(i == mode ? ACCENT : 0xFF2F2F33);
             animBtns[i].setBackground(g);
             animBtns[i].setTextColor(i == mode ? 0xFF1B1B1D : TEXT);
         }
@@ -1148,6 +1286,12 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         if (field != null && dialog.getWindow() != null) {
             dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
         }
+        if (dialog.getWindow() != null) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(0xFF2A2A2D);
+            bg.setCornerRadius(d(22));
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.InsetDrawable(bg, d(16)));
+        }
         dialog.show();
         for (int which : new int[]{DialogInterface.BUTTON_POSITIVE, DialogInterface.BUTTON_NEGATIVE}) {
             if (dialog.getButton(which) != null) dialog.getButton(which).setTextColor(ACCENT);
@@ -1183,7 +1327,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         TextView t = label(c, "", 13, TEXT);
         t.setGravity(Gravity.CENTER);
         t.setSingleLine(true);
-        t.setPadding(d(6), d(9), d(6), d(9));
+        t.setPadding(d(6), d(12), d(6), d(12));
         t.setOnClickListener(l);
         return t;
     }

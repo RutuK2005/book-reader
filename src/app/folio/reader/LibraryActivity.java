@@ -57,7 +57,7 @@ public class LibraryActivity extends Activity {
     private SharedPreferences prefs;
     private final HashMap<String, Bitmap> covers = new HashMap<>();
     private TextView busy;
-    private int bg, fg, dim, card;
+    private int bg, fg, dim, card, lift;
     private float dp;
     private boolean importing;
     private String filter = ALL;
@@ -104,10 +104,15 @@ public class LibraryActivity extends Activity {
     @SuppressWarnings("deprecation")
     private void build() {
         int theme = P.theme(prefs);
-        bg = theme == 5 ? 0xFF121212 : Themes.BG[theme];
+        // A lightly tinted page with paper-white cards raised off it; in the dark themes the
+        // cards are simply a lighter grey, since shadows do not show on black.
+        int paper = theme == 5 ? 0xFF121212 : Themes.BG[theme];
+        boolean darkTheme = Themes.isDark(theme);
         fg = Themes.FG[theme];
         dim = (fg & 0x00FFFFFF) | 0x99000000;
-        card = Themes.blend(bg, fg, Themes.isDark(theme) ? 0.10f : 0.055f);
+        bg = darkTheme ? paper : Themes.blend(paper, fg, 0.055f);
+        card = darkTheme ? Themes.blend(paper, fg, 0.10f) : Themes.blend(paper, 0xFFFFFFFF, 0.65f);
+        lift = darkTheme ? 0 : d(2);
         Window w = getWindow();
         w.setStatusBarColor(bg);
         w.setNavigationBarColor(bg);
@@ -198,7 +203,7 @@ public class LibraryActivity extends Activity {
         head.addView(titles, new LinearLayout.LayoutParams(0, WRAP, 1f));
         TextView add = text("+  Add books", 15, Color.WHITE, false);
         add.setPadding(d(20), d(11), d(20), d(11));
-        add.setBackground(round(ACCENT, 24));
+        add.setBackground(press(round(ACCENT, 24)));
         add.setOnClickListener(v -> pick());
         head.addView(add);
         return head;
@@ -209,7 +214,8 @@ public class LibraryActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(d(18), d(12), d(18), d(12));
-        row.setBackground(round(card, 18));
+        row.setBackground(press(round(card, 18)));
+        row.setElevation(lift);
         int streak = lib.streak();
         TextView t = text("Today  " + minutes(lib.secondsOn(0)) + "   ·   " + streak + (streak == 1 ? " day" : " days") + " streak", 14, fg, false);
         t.setSingleLine(true);
@@ -229,7 +235,8 @@ public class LibraryActivity extends Activity {
         LinearLayout c = new LinearLayout(this);
         c.setGravity(Gravity.CENTER_VERTICAL);
         c.setPadding(d(18), d(14), d(18), d(14));
-        c.setBackground(round(card, 18));
+        c.setBackground(press(round(card, 18)));
+        c.setElevation(lift);
         Ring ring = new Ring(this);
         ring.set(Math.min(1f, today / (goal * 60f)), today / 60, fg, Themes.blend(card, fg, 0.14f));
         c.addView(ring, new LinearLayout.LayoutParams(d(74), d(74)));
@@ -261,7 +268,8 @@ public class LibraryActivity extends Activity {
     private View continueCard(final Library.Book b) {
         LinearLayout c = new LinearLayout(this);
         c.setPadding(d(16), d(16), d(18), d(16));
-        c.setBackground(round(card, 18));
+        c.setBackground(press(round(card, 18)));
+        c.setElevation(lift);
         c.setGravity(Gravity.CENTER_VERTICAL);
         CoverView cover = coverView(b);
         c.addView(cover, new LinearLayout.LayoutParams(d(92), WRAP));
@@ -288,7 +296,7 @@ public class LibraryActivity extends Activity {
         col.addView(line, top(MATCH, d(4), 10));
         TextView resume = text("Resume", 14, Color.WHITE, false);
         resume.setPadding(d(18), d(8), d(18), d(8));
-        resume.setBackground(round(ACCENT, 20));
+        resume.setBackground(press(round(ACCENT, 20)));
         LinearLayout.LayoutParams rlp = top(WRAP, WRAP, 12);
         col.addView(resume, rlp);
 
@@ -325,6 +333,7 @@ public class LibraryActivity extends Activity {
         add.setBackground(outline);
         add.setOnClickListener(v -> newShelfDialog(null));
         row.addView(add);
+        row.setPadding(d(2), d(2), d(2), d(6));
         HorizontalScrollView hs = new HorizontalScrollView(this);
         hs.setHorizontalScrollBarEnabled(false);
         hs.addView(row);
@@ -335,7 +344,8 @@ public class LibraryActivity extends Activity {
         boolean on = filter.equals(key);
         TextView t = text(name + "  " + count, 14, on ? Color.WHITE : fg, false);
         t.setPadding(d(16), d(8), d(16), d(8));
-        t.setBackground(round(on ? ACCENT : card, 20));
+        t.setBackground(press(round(on ? ACCENT : card, 20)));
+        t.setElevation(on ? 0 : lift);
         t.setOnClickListener(v -> {
             setFilter(key);
             build();
@@ -696,6 +706,12 @@ public class LibraryActivity extends Activity {
         g.setColor(color);
         g.setCornerRadius(d(radiusDp));
         return g;
+    }
+
+    /** Adds a touch ripple to a rounded background. */
+    private android.graphics.drawable.Drawable press(GradientDrawable g) {
+        return new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x22000000), g, null);
     }
 
     private LinearLayout.LayoutParams top(int w, int h, int marginDp) {

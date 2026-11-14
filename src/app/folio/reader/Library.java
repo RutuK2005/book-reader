@@ -291,6 +291,7 @@ final class Library {
         if (t.toLowerCase().endsWith(".pdf")) t = t.substring(0, t.length() - 4);
         t = t.replaceAll("(?i)\\(?\\s*pdf\\s*drive(\\.com)?\\s*\\)?", " ");
         t = t.replaceAll("(?i)\\(?\\s*z-lib(\\.org)?\\s*\\)?", " ");
+        t = t.replaceAll("(?i)_?ocean\\s*of\\s*pdf(\\.com)?_?", " ");
         t = t.replaceAll("[_-]+", " ").replaceAll("\\s+", " ").trim();
         return t.isEmpty() ? "Untitled" : t;
     }
@@ -372,7 +373,7 @@ final class Library {
                 b.src = o.optString("src", "");
                 b.shelf = o.optString("shelf", "");
                 // Titles the reader never renamed get the tidier form.
-                if (!b.src.isEmpty() && b.title.equals(titleFrom(b.src))) b.title = niceTitle(b.src);
+                if (!b.src.isEmpty() && (b.title.equals(titleFrom(b.src)) || b.title.toLowerCase().contains("oceanofpdf"))) b.title = niceTitle(b.src);
                 b.pages = o.optInt("pages");
                 b.page = o.optInt("page");
                 b.opened = o.optLong("opened");
