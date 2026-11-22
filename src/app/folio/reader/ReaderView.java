@@ -395,7 +395,8 @@ final class ReaderView extends View implements PdfEngine.Callback {
         shaders.clear();
         pending.clear();
         footers.clear();
-        boolean dual = dualPref && getWidth() > getHeight() && pageCount > 1;
+        boolean dual = dualPref && getWidth() > getHeight() && pageCount > 1
+                && getResources().getConfiguration().smallestScreenWidthDp >= 600;
         boolean crop = cropOn && book.cropDone;
         layout = new PdfEngine.Layout(getWidth(), getHeight(), footerH, pad, pageCount, dual,
                 crop ? book.cropEven : null, crop ? book.cropOdd : null, crop && book.cropCover);

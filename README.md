@@ -11,8 +11,8 @@ and it runs fine on a tablet with 2 GB of RAM.
 ## Install
 
 Download `MyBookSpace.apk` from the [Releases](../../releases) page, open it on your Android device
-and allow installing from that source when asked. Needs Android 8 or newer. Then tap **Add books**
-and pick your PDFs.
+and allow installing from that source when asked. Works on Android phones and tablets running
+Android 8 or newer. Then tap **Add books** and pick your PDFs.
 
 ## What it does
 
@@ -22,6 +22,7 @@ and pick your PDFs.
 - Hold a book and drag it to rearrange, onto a shelf's tab to file it, or onto another book to
   merge two versions (say a PDF and an EPUB) into one entry. Shelf tabs can be dragged into any order.
 - Search by title, and a details page per book with time spent reading.
+- Change a book's cover to any picture on the device, with a shortcut to search the web for one.
 - Today's reading time, a daily goal and a streak, folded away until you tap them.
 - Opens PDF, EPUB and TXT. EPUB and text books are laid out into pages when added, and their
   text size can be changed afterwards.
@@ -32,7 +33,7 @@ and pick your PDFs.
   the volume keys, or hold an edge to riffle through pages.
 - Themes: White, Paper, Sepia, Green, Gray, Night, with a warmth slider and in-app brightness.
   Night can switch itself on from 9 pm to 6 am.
-- Crop margins so the text fills the screen; two-page spread in landscape; pinch or double-tap to zoom.
+- Crop margins so the text fills the screen; two-page spread in landscape on tablets; pinch or double-tap to zoom.
 - Reading ruler: dims the page except for a band you drag along, at a height you choose.
 - Highlights in four colours: drag over a passage to mark it; undo, or tap one to remove it.
 - Bookmarks and page notes, go to page, and a page slider with a preview.

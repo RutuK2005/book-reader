@@ -84,6 +84,8 @@ public class LibraryActivity extends Activity {
     private int bg, fg, dim, card, lift;
     private float dp;
     private boolean importing;
+    /** True on a phone-width screen, where the wide rows are trimmed to fit. */
+    private boolean narrow;
     /** Id of the book a cover picture is being picked for, or null. */
     private String coverFor;
     private String filter = ALL;
@@ -142,6 +144,9 @@ public class LibraryActivity extends Activity {
     @SuppressWarnings("deprecation")
     private void build() {
         int theme = P.theme(prefs);
+        // Large text needs room too, so the width is counted in text-sized units.
+        android.content.res.Configuration cfg = getResources().getConfiguration();
+        narrow = cfg.screenWidthDp / Math.max(1f, cfg.fontScale) < 440;
         // A lightly tinted page with paper-white cards raised off it; in the dark themes the
         // cards are simply a lighter grey, since shadows do not show on black.
         int paper = theme == 5 ? 0xFF121212 : Themes.BG[theme];
@@ -176,7 +181,7 @@ public class LibraryActivity extends Activity {
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(d(24), d(18), d(24), d(40));
+        page.setPadding(d(narrow ? 16 : 24), d(18), d(narrow ? 16 : 24), d(40));
 
         page.addView(header());
         final boolean open = prefs.getBoolean(P.HOME_OPEN, false);
@@ -323,8 +328,10 @@ public class LibraryActivity extends Activity {
         date.setAllCaps(true);
         date.setLetterSpacing(0.08f);
         titles.addView(date);
-        titles.addView(text("MyBookSpace", 30, fg, true));
-        TextView by = text("by Rutuparn K   ·   github.com/RutuK2005", 12, dim, false);
+        TextView appName = text("MyBookSpace", narrow ? 25 : 30, fg, true);
+        appName.setSingleLine(true);
+        titles.addView(appName);
+        TextView by = text(narrow ? "by Rutuparn K · github.com/RutuK2005" : "by Rutuparn K   ·   github.com/RutuK2005", 12, dim, false);
         by.setOnClickListener(v -> {
             try {
                 startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/RutuK2005")));
@@ -334,8 +341,8 @@ public class LibraryActivity extends Activity {
         });
         titles.addView(by);
         head.addView(titles, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        TextView add = text("+  Add books", 15, Color.WHITE, false);
-        add.setPadding(d(20), d(11), d(20), d(11));
+        TextView add = text(narrow ? "+  Add" : "+  Add books", 15, Color.WHITE, false);
+        add.setPadding(d(narrow ? 15 : 20), d(11), d(narrow ? 15 : 20), d(11));
         add.setBackground(press(round(ACCENT, 24)));
         add.setOnClickListener(v -> pick());
         head.addView(add);
@@ -352,8 +359,9 @@ public class LibraryActivity extends Activity {
         int streak = lib.streak();
         TextView t = text("Today  " + minutes(lib.secondsOn(0)) + "   ·   " + streak + (streak == 1 ? " day" : " days") + " streak", 14, fg, false);
         t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
         row.addView(t, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        row.addView(text(open ? "Hide  ▴" : "Goal and current book  ▾", 13, ACCENT, false));
+        row.addView(text(open ? "Hide  ▴" : narrow ? "More  ▾" : "Goal and current book  ▾", 13, ACCENT, false));
         row.setOnClickListener(v -> {
             prefs.edit().putBoolean(P.HOME_OPEN, !open).apply();
             build();
@@ -372,7 +380,7 @@ public class LibraryActivity extends Activity {
         c.setElevation(lift);
         Ring ring = new Ring(this);
         ring.set(Math.min(1f, today / (goal * 60f)), today / 60, fg, Themes.blend(card, fg, 0.14f));
-        c.addView(ring, new LinearLayout.LayoutParams(d(74), d(74)));
+        c.addView(ring, new LinearLayout.LayoutParams(d(narrow ? 58 : 74), d(narrow ? 58 : 74)));
         c.addView(stat(minutes(today), today >= goal * 60 ? "Goal reached" : "of " + goal + " min today"), statParams());
         c.addView(stat(streak + (streak == 1 ? " day" : " days"), "Streak"), statParams());
         c.addView(stat(minutes(lib.weekSeconds()), "This week"), statParams());
@@ -382,15 +390,16 @@ public class LibraryActivity extends Activity {
 
     private LinearLayout.LayoutParams statParams() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
-        lp.leftMargin = d(16);
+        lp.leftMargin = d(narrow ? 10 : 16);
         return lp;
     }
 
     private View stat(String value, String label) {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        TextView v = text(value, 17, fg, true);
+        TextView v = text(value, narrow ? 14 : 17, fg, true);
         v.setSingleLine(true);
+        v.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(v);
         TextView l = text(label, 11, dim, false);
         l.setMaxLines(2);
@@ -556,7 +565,7 @@ public class LibraryActivity extends Activity {
     /** Lays the books out as rows of covers; the column count follows the screen width. */
     private void grid(LinearLayout page, ArrayList<Library.Book> books) {
         int gap = d(20);
-        int width = getResources().getDisplayMetrics().widthPixels - d(48);
+        int width = getResources().getDisplayMetrics().widthPixels - d(narrow ? 32 : 48);
         int cols = Math.max(2, (width + gap) / (d(150) + gap));
         for (int i = 0; i < books.size(); i += cols) {
             LinearLayout row = new LinearLayout(this);
@@ -980,6 +989,7 @@ public class LibraryActivity extends Activity {
         int scheme = prefs.getInt("home_scheme", 0);
         TextView name = text("Home page colours   ·   " + SCHEME_NAMES[scheme < SCHEME_NAMES.length ? scheme : 0], 14, fg, false);
         name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, WRAP, 1f);
         nlp.leftMargin = d(12);
         row.addView(name, nlp);
