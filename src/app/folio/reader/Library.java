@@ -3,8 +3,12 @@ package app.folio.reader;
 import android.content.Context;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.pdf.PdfRenderer;
+import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
@@ -58,6 +62,8 @@ final class Library {
         String partner = "";
         /** True for a version tucked under another book; it is not shown on its own. */
         boolean hidden;
+        /** True when the reader chose the cover picture; it is then never redrawn from page one. */
+        boolean ownCover;
 
         String kind() {
             return !converted ? "PDF" : src.toLowerCase().endsWith(".txt") ? "Text" : "EPUB";
@@ -318,16 +324,7 @@ final class Library {
                  PdfRenderer r = new PdfRenderer(pfd)) {
                 b.pages = r.getPageCount();
                 if (b.pages < 1) throw new IOException("That PDF has no pages");
-                try (PdfRenderer.Page p = r.openPage(0)) {
-                    int w = 420, h = Math.max(1, Math.round(w * p.getHeight() / (float) p.getWidth()));
-                    Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                    bmp.eraseColor(Color.WHITE);
-                    p.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-                    try (OutputStream out = new FileOutputStream(cover(b))) {
-                        bmp.compress(Bitmap.CompressFormat.JPEG, 88, out);
-                    }
-                    bmp.recycle();
-                }
+                drawCover(b, r);
             } catch (SecurityException e) {
                 throw new IOException("That PDF is password-protected");
             }
@@ -378,18 +375,13 @@ final class Library {
                 b.highlights.clear();
                 b.pages = pages;
                 b.textSize = size;
-                try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file(b), ParcelFileDescriptor.MODE_READ_ONLY);
-                     PdfRenderer r = new PdfRenderer(pfd); PdfRenderer.Page p = r.openPage(0)) {
-                    int w = 420, h = Math.max(1, Math.round(w * p.getHeight() / (float) p.getWidth()));
-                    Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                    bmp.eraseColor(Color.WHITE);
-                    p.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-                    try (OutputStream out = new FileOutputStream(cover(b))) {
-                        bmp.compress(Bitmap.CompressFormat.JPEG, 88, out);
+                if (!b.ownCover) {
+                    try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file(b), ParcelFileDescriptor.MODE_READ_ONLY);
+                         PdfRenderer r = new PdfRenderer(pfd)) {
+                        drawCover(b, r);
+                    } catch (Exception ignored) {
+                        // The old cover picture stays.
                     }
-                    bmp.recycle();
-                } catch (Exception ignored) {
-                    // The old cover picture stays.
                 }
                 b.cropDone = true;
                 b.cropEven = b.cropOdd = null;
@@ -399,6 +391,97 @@ final class Library {
             }
         } finally {
             tmp.delete();
+        }
+    }
+
+    // ---------------------------------------------------------------- covers
+
+    /** Draws the book's first page as its cover picture. */
+    private void drawCover(Book b, PdfRenderer r) throws IOException {
+        try (PdfRenderer.Page p = r.openPage(0)) {
+            int w = 420, h = Math.max(1, Math.round(w * p.getHeight() / (float) p.getWidth()));
+            Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            bmp.eraseColor(Color.WHITE);
+            p.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+            writeCover(b, bmp);
+            bmp.recycle();
+        }
+    }
+
+    /** Written beside the old picture and swapped in, so a failure never leaves a book coverless. */
+    private void writeCover(Book b, Bitmap bmp) throws IOException {
+        File tmp = new File(cover(b).getPath() + ".tmp");
+        try {
+            try (OutputStream out = new FileOutputStream(tmp)) {
+                if (!bmp.compress(Bitmap.CompressFormat.JPEG, 88, out)) throw new IOException("Couldn't save the cover");
+            }
+            if (!tmp.renameTo(cover(b))) throw new IOException("Couldn't save the cover");
+        } finally {
+            tmp.delete();
+        }
+    }
+
+    /** Makes a picture the reader picked the book's cover. Slow: call off the UI thread. */
+    void setCover(Book b, Uri uri) throws Exception {
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inJustDecodeBounds = true;
+        try (InputStream in = ctx.getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new IOException("Can't read that picture");
+            BitmapFactory.decodeStream(in, null, o);
+        }
+        if (o.outWidth <= 0 || o.outHeight <= 0) throw new IOException("That file isn't a picture");
+        // Decoded at a fraction of its size: a full photo would not fit in memory on a small tablet.
+        final int width = 600;
+        int sample = 1;
+        while (Math.min(o.outWidth, o.outHeight) / (sample * 2) >= width) sample *= 2;
+        o = new BitmapFactory.Options();
+        o.inSampleSize = sample;
+        Bitmap bmp;
+        try (InputStream in = ctx.getContentResolver().openInputStream(uri)) {
+            bmp = in == null ? null : BitmapFactory.decodeStream(in, null, o);
+        }
+        if (bmp == null) throw new IOException("That picture couldn't be opened");
+        int turn = 0;
+        try (InputStream in = ctx.getContentResolver().openInputStream(uri)) {
+            if (in != null) {
+                int orient = new ExifInterface(in).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                turn = orient == ExifInterface.ORIENTATION_ROTATE_90 ? 90 : orient == ExifInterface.ORIENTATION_ROTATE_180 ? 180
+                        : orient == ExifInterface.ORIENTATION_ROTATE_270 ? 270 : 0;
+            }
+        } catch (Exception ignored) {
+            // No orientation tag (PNG, WebP): the picture is used as it is.
+        }
+        Matrix m = new Matrix();
+        if (turn != 0) m.postRotate(turn);
+        int shown = turn % 180 == 0 ? bmp.getWidth() : bmp.getHeight();
+        if (shown > width) {
+            float k = width / (float) shown;
+            m.postScale(k, k);
+        }
+        Bitmap fitted = Bitmap.createBitmap(bmp, 0, 0, bmp.getWidth(), bmp.getHeight(), m, true);
+        // Transparent pictures get a white page behind them; JPEG would turn the gaps black.
+        Bitmap flat = Bitmap.createBitmap(fitted.getWidth(), fitted.getHeight(), Bitmap.Config.ARGB_8888);
+        flat.eraseColor(Color.WHITE);
+        new Canvas(flat).drawBitmap(fitted, 0, 0, null);
+        if (fitted != bmp) fitted.recycle();
+        bmp.recycle();
+        synchronized (this) {
+            writeCover(b, flat);
+            b.ownCover = true;
+            save();
+        }
+        flat.recycle();
+    }
+
+    /** Goes back to the first page as the cover. Slow: call off the UI thread. */
+    void resetCover(Book b) throws Exception {
+        synchronized (this) {
+            try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file(b), ParcelFileDescriptor.MODE_READ_ONLY);
+                 PdfRenderer r = new PdfRenderer(pfd)) {
+                drawCover(b, r);
+            }
+            b.ownCover = false;
+            save();
         }
     }
 
@@ -454,6 +537,7 @@ final class Library {
                 o.put("readSec", b.readSec).put("celebrated", b.celebrated);
                 o.put("converted", b.converted).put("textSize", b.textSize);
                 o.put("partner", b.partner).put("hidden", b.hidden);
+                o.put("ownCover", b.ownCover);
                 arr.put(o);
             }
             JSONObject root = new JSONObject();
@@ -513,6 +597,7 @@ final class Library {
                 b.size = o.optLong("size");
                 b.cropDone = o.optBoolean("cropDone");
                 b.cropCover = o.optBoolean("cropCover");
+                b.ownCover = o.optBoolean("ownCover");
                 b.cropEven = fromJson(o.optJSONArray("cropEven"));
                 b.cropOdd = fromJson(o.optJSONArray("cropOdd"));
                 JSONArray bm = o.optJSONArray("bookmarks");

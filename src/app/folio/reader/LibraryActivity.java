@@ -46,7 +46,8 @@ import java.util.Locale;
  */
 public class LibraryActivity extends Activity {
 
-    private static final int REQ_PICK = 1;
+    private static final int REQ_PICK = 1, REQ_COVER = 2;
+    private static final String STATE_COVER = "cover_book";
     private static final int DEFAULT_ACCENT = 0xFFB5651D;
     /** The accent of the colour scheme in use; set each time the page is built. */
     private static int ACCENT = DEFAULT_ACCENT;
@@ -83,6 +84,8 @@ public class LibraryActivity extends Activity {
     private int bg, fg, dim, card, lift;
     private float dp;
     private boolean importing;
+    /** Id of the book a cover picture is being picked for, or null. */
+    private String coverFor;
     private String filter = ALL;
     private ScrollView scroll;
     private LinearLayout listBox;
@@ -116,6 +119,14 @@ public class LibraryActivity extends Activity {
         prefs = P.get(this);
         dp = getResources().getDisplayMetrics().density;
         filter = prefs.getString(P.SHELF, ALL);
+        if (state != null) coverFor = state.getString(STATE_COVER);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        // The picker can push this page out of memory; the book being covered has to survive that.
+        out.putString(STATE_COVER, coverFor);
     }
 
     @Override
@@ -756,6 +767,12 @@ public class LibraryActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int result, Intent data) {
         super.onActivityResult(req, result, data);
+        if (req == REQ_COVER) {
+            Library.Book b = coverFor == null ? null : lib.find(coverFor);
+            coverFor = null;
+            if (result == RESULT_OK && data != null && data.getData() != null && b != null) applyCover(b, data.getData());
+            return;
+        }
         if (req != REQ_PICK || result != RESULT_OK || data == null) return;
         final ArrayList<Uri> uris = new ArrayList<>();
         ClipData clip = data.getClipData();
@@ -792,18 +809,94 @@ public class LibraryActivity extends Activity {
     private void bookMenu(final Library.Book b) {
         new AlertDialog.Builder(this)
                 .setTitle(b.title)
-                .setItems(b.partner.isEmpty() ? new String[]{"Move to shelf…", "Rename", "Details", "Remove from library"}
-                        : new String[]{"Move to shelf…", "Rename", "Details", "Remove from library", "Separate the two versions"}, (dlg, which) -> {
+                .setItems(b.partner.isEmpty() ? new String[]{"Move to shelf…", "Rename", "Change cover…", "Details", "Remove from library"}
+                        : new String[]{"Move to shelf…", "Rename", "Change cover…", "Details", "Remove from library", "Separate the two versions"}, (dlg, which) -> {
                     if (which == 0) shelfPicker(b);
                     else if (which == 1) rename(b);
-                    else if (which == 2) details(b);
-                    else if (which == 3) confirmRemove(b);
+                    else if (which == 2) coverMenu(b);
+                    else if (which == 3) details(b);
+                    else if (which == 4) confirmRemove(b);
                     else {
                         lib.unmerge(b);
                         build();
                     }
                 })
                 .show();
+    }
+
+    // ---------------------------------------------------------------- covers
+
+    private void coverMenu(final Library.Book b) {
+        final ArrayList<String> items = new ArrayList<>();
+        items.add("Choose a picture from this device");
+        items.add("Find a cover on the web");
+        if (b.ownCover) items.add("Use the first page again");
+        new AlertDialog.Builder(this)
+                .setTitle("Cover")
+                .setItems(items.toArray(new String[0]), (dlg, which) -> {
+                    if (which == 0) pickCover(b);
+                    else if (which == 1) searchCover(b);
+                    else resetCover(b);
+                })
+                .show();
+    }
+
+    private void pickCover(Library.Book b) {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("image/*");
+        try {
+            coverFor = b.id;
+            startActivityForResult(i, REQ_COVER);
+        } catch (Exception e) {
+            coverFor = null;
+            Toast.makeText(this, "No file picker is available on this device", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** Opens an image search for the book in the browser; the saved picture is then chosen here. */
+    private void searchCover(Library.Book b) {
+        Uri u = Uri.parse("https://www.google.com/search").buildUpon()
+                .appendQueryParameter("tbm", "isch").appendQueryParameter("q", b.title + " book cover").build();
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, u));
+            Toast.makeText(this, "Save a picture, then come back and choose it as the cover", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "No browser is available on this device", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void applyCover(final Library.Book b, final Uri uri) {
+        new Thread(() -> {
+            String error = null;
+            try {
+                lib.setCover(b, uri);
+            } catch (Throwable t) {
+                error = t instanceof OutOfMemoryError || t.getMessage() == null ? "That picture couldn't be used" : t.getMessage();
+            }
+            coverChanged(b, error);
+        }).start();
+    }
+
+    private void resetCover(final Library.Book b) {
+        new Thread(() -> {
+            String error = null;
+            try {
+                lib.resetCover(b);
+            } catch (Throwable t) {
+                error = "The first page couldn't be drawn";
+            }
+            coverChanged(b, error);
+        }).start();
+    }
+
+    private void coverChanged(final Library.Book b, final String error) {
+        runOnUiThread(() -> {
+            if (isFinishing()) return;
+            covers.remove(b.id);
+            build();
+            if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show();
+        });
     }
 
     private void shelfPicker(final Library.Book b) {
