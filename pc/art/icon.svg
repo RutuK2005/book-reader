@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="512" height="512">
+  <!-- The Android app's icon: an open book with a bookmark ribbon, on a rounded square. -->
+  <rect x="6" y="6" width="96" height="96" rx="22" fill="#3A2A22"/>
+  <g transform="translate(54 54) scale(1.32) translate(-54 -55)">
+    <path fill="#FFFFFF" d="M54,41 C47,35 36,34 28,37 L28,71 C36,68 47,69 54,75 Z"/>
+    <path fill="#EADFC8" d="M54,41 C61,35 72,34 80,37 L80,71 C72,68 61,69 54,75 Z"/>
+    <path fill="#E8A33D" d="M66,35.5 L72,34.6 L72,50 L69,47 L66,50 Z"/>
+  </g>
+</svg>

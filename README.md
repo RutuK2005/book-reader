@@ -14,6 +14,9 @@ Download `MyBookSpace.apk` from the [Releases](../../releases) page, open it on 
 and allow installing from that source when asked. Works on Android phones and tablets running
 Android 8 or newer. Then tap **Add books** and pick your PDFs.
 
+**On a PC:** there is a Windows version too, with the same library and reader. Download
+`MyBookSpace-Setup-1.0.0.exe` from the same Releases page; see [pc/README.md](pc/README.md).
+
 ## What it does
 
 **Library**

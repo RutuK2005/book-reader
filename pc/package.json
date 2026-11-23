@@ -1,0 +1,63 @@
+{
+  "name": "mybookspace",
+  "productName": "MyBookSpace",
+  "version": "1.0.0",
+  "description": "A calm book reader for PDF, EPUB and text files",
+  "author": "Rutuparn K",
+  "license": "MIT",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "vendor": "node scripts/vendor.js",
+    "postinstall": "node scripts/vendor.js",
+    "start": "electron .",
+    "serve": "node scripts/serve.js",
+    "dist": "node scripts/vendor.js && electron-builder --win nsis portable --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "pdfjs-dist": "^4.8.69"
+  },
+  "build": {
+    "appId": "app.folio.reader.pc",
+    "productName": "MyBookSpace",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "app/**/*"
+    ],
+    "win": {
+      "icon": "art/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "MyBookSpace-Setup-${version}.exe",
+      "shortcutName": "MyBookSpace"
+    },
+    "portable": {
+      "artifactName": "MyBookSpace-Portable-${version}.exe"
+    },
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF book",
+        "role": "Viewer"
+      },
+      {
+        "ext": "epub",
+        "name": "EPUB book",
+        "role": "Viewer"
+      }
+    ]
+  }
+}
