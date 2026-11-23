@@ -7,9 +7,9 @@ mouse, a keyboard and a wide window.
 
 Download one of these from the [Releases](../../../releases) page:
 
-- `MyBookSpace-Setup-1.0.0.exe` installs it with a Start menu shortcut and adds MyBookSpace to
+- `MyBookSpace-Setup-1.1.0.exe` installs it with a Start menu shortcut and adds MyBookSpace to
   "Open with" for PDF and EPUB files.
-- `MyBookSpace-Portable-1.0.0.exe` runs without installing.
+- `MyBookSpace-Portable-1.1.0.exe` runs without installing.
 
 Windows may show a "Windows protected your PC" notice because the app is not code-signed; choose
 **More info**, then **Run anyway**. Needs Windows 10 or 11 (64-bit).
@@ -27,6 +27,10 @@ Then click **Add books**, or drop PDF, EPUB or TXT files onto the window.
 - Search by title, covers-only view, 28 home page colour schemes.
 - Today's reading time, a daily goal and a streak, folded away until you click them.
 - Books are copied into the app, so a book survives the original file being moved.
+- Move your library between devices: unfold the top line of the home page and choose **Move your
+  library** to export the shelves you choose into one `.mbs` file, or to import one made on a
+  phone or tablet. Double-clicking a `.mbs` file, or dropping it on the window, imports it too.
+  See [Moving your library](../README.md#moving-your-library).
 
 **Reading**
 - Page turns: a paper curl that follows the mouse, a slide, or none. Click or drag the edges, use
@@ -82,7 +86,7 @@ Needs Node.js 20 or newer.
 cd pc
 npm install          # also copies pdf.js into app/vendor
 npm start            # run the app
-npm run dist         # build dist\MyBookSpace-Setup-1.0.0.exe and the portable exe
+npm run dist         # build dist\MyBookSpace-Setup-1.1.0.exe and the portable exe
 ```
 
 If `npm run dist` stops with "Cannot create symbolic link" while unpacking `winCodeSign`, either
@@ -104,5 +108,12 @@ python test\smoke.py               # needs Playwright for Python; uses Edge if n
 ```
 
 The check adds a PDF, an EPUB and a text file, then exercises shelves, covers, page turns,
-bookmarks, notes, highlights, themes, text size, merging and search, and saves screenshots to
-`test/out`.
+bookmarks, notes, highlights, themes, text size, merging and search, exports the library to a
+file and imports it into an empty library, and saves screenshots to `test/out`.
+
+`test/ZipCheck.java` reads and writes library files with the same Java zip classes the Android
+app uses, to check the two versions agree on the format:
+
+```powershell
+java test\ZipCheck.java read test\out\exported.mbs
+```

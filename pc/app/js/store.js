@@ -2,6 +2,7 @@
 // even if the original file is moved or deleted. Also keeps the reader's shelves, settings and
 // a per-day reading log for the streak and daily goal.
 import { openBook, sniff, DEFAULT_TEXT_SIZE } from "./docs.js";
+import { readZip, makeZip } from "./zip.js";
 
 const DB_NAME = "mybookspace";
 let db = null;
@@ -333,4 +334,206 @@ export function streak() {
   let n = 0;
   for (let i = secondsOn(0) >= 60 ? 0 : 1; secondsOn(i) >= 60; i++) n++;
   return n;
+}
+
+// ---------------------------------------------------------------- moving the library
+
+/*
+ * A library file is a zip the PC and Android versions both read and write. manifest.json comes
+ * first and lists the books with their place, bookmarks, notes and highlights; then each
+ * book's original file and its cover.
+ */
+const TRANSFER_FORMAT = "mybookspace-library";
+
+function manifestOf(b, hasCover) {
+  const o = {
+    id: b.id, title: b.title, src: b.src, shelf: b.shelf, kind: b.kind, file: `books/${b.id}.${b.kind}`,
+    ownCover: b.ownCover, pages: b.pages, page: b.page, opened: b.opened, added: b.added, size: b.size,
+    bookmarks: b.bookmarks, notes: b.notes, highlights: b.highlights, secPerPage: b.secPerPage,
+    samples: b.samples, readSec: b.readSec, celebrated: b.celebrated, textSize: b.textSize,
+    partner: b.partner, hidden: b.hidden,
+  };
+  if (hasCover) o.cover = `covers/${b.id}.jpg`;
+  return o;
+}
+
+/**
+ * Puts the chosen books, with everything the reader has done in them, into one file. A book's
+ * second version goes along with it. Returns {blob, count}.
+ */
+export async function exportLibrary(chosen, progress) {
+  const out = state.books.filter((b) => chosen.includes(b) || chosen.some((c) => c.partner === b.id));
+  const entries = [], books = [];
+  for (const b of out) {
+    const file = await bookFile(b);
+    if (!file) continue;
+    const cover = await coverFile(b);
+    books.push(manifestOf(b, !!cover));
+    entries.push({ name: `books/${b.id}.${b.kind}`, blob: file });
+    if (cover) entries.push({ name: `covers/${b.id}.jpg`, blob: cover });
+  }
+  const manifest = {
+    format: TRANSFER_FORMAT, version: 1, app: "pc", exportedAt: Date.now(), books,
+    shelves: state.shelves, daily: state.daily, goalMin: state.prefs.goalMin,
+  };
+  entries.unshift({ name: "manifest.json", blob: new Blob([JSON.stringify(manifest)]) });
+  return { blob: await makeZip(entries, progress), count: books.length };
+}
+
+/** True for a library file, whatever it is called. */
+export async function isLibraryFile(blob, name = "") {
+  if (/\.mbs$/i.test(name)) return true;
+  if ((await sniff(blob)) !== "epub") return false;
+  try {
+    const zip = await readZip(blob);
+    return zip.has("manifest.json") && !zip.has("META-INF/container.xml");
+  } catch (e) {
+    return false;
+  }
+}
+
+function fromManifest(o, sameApp) {
+  const notes = {};
+  for (const [k, v] of Object.entries(o.notes || {})) if (Number.isInteger(Number(k)) && typeof v === "string") notes[Number(k)] = v;
+  const highlights = {};
+  for (const [k, list] of Object.entries(o.highlights || {})) {
+    const rects = (Array.isArray(list) ? list : []).filter((r) => Array.isArray(r) && r.length >= 4).map((r) => r.slice(0, 5).map(Number));
+    if (rects.length && Number.isInteger(Number(k))) highlights[Number(k)] = rects;
+  }
+  return {
+    id: String(o.id || ""), title: String(o.title || "Untitled"), src: String(o.src || ""), shelf: String(o.shelf || "").trim(),
+    kind: "pdf", pages: Number(o.pages) || 0, page: Math.max(0, Number(o.page) || 0), opened: Number(o.opened) || 0,
+    added: Number(o.added) || Date.now(), size: Number(o.size) || 0,
+    // Text sizes mean different things on a PC and on Android, so only its own are kept.
+    textSize: sameApp && Number(o.textSize) > 0 ? Number(o.textSize) : DEFAULT_TEXT_SIZE, crop: null,
+    bookmarks: [...new Set((o.bookmarks || []).map(Number).filter(Number.isInteger))].sort((a, b) => a - b),
+    notes, highlights, secPerPage: Number(o.secPerPage) || 0, samples: Number(o.samples) || 0,
+    readSec: Number(o.readSec) || 0, celebrated: !!o.celebrated, partner: String(o.partner || ""),
+    hidden: !!o.hidden, ownCover: !!o.ownCover,
+  };
+}
+
+/**
+ * A book laid out from an EPUB or text file has a different number of pages on each device, so
+ * everything tied to a page moves to the same point in the book. Highlights mark an area of a
+ * page and cannot be carried over.
+ */
+function fitPages(b, pages) {
+  const old = b.pages;
+  if (old > 0 && old !== pages) {
+    const k = pages / old, at = (p) => Math.min(pages - 1, Math.round(p * k));
+    b.page = at(b.page);
+    b.bookmarks = [...new Set(b.bookmarks.map(at))].sort((x, y) => x - y);
+    const notes = {};
+    for (const [p, text] of Object.entries(b.notes)) {
+      const q = at(Number(p));
+      notes[q] = notes[q] ? notes[q] + "\n" + text : text;
+    }
+    b.notes = notes;
+    b.highlights = {};
+    b.secPerPage = 0;
+    b.samples = 0;
+  }
+  b.pages = pages;
+  b.page = Math.max(0, Math.min(pages - 1, b.page));
+}
+
+/** A book that is already here takes the newer of the two reading positions and keeps both sets of notes. */
+function mergeInto(have, o) {
+  const from = fromManifest(o, false);
+  if (have.pages > 0) fitPages(from, have.pages);
+  if (from.opened > have.opened) {
+    have.page = from.page;
+    have.opened = from.opened;
+    if (from.samples > 0) {
+      have.secPerPage = from.secPerPage;
+      have.samples = from.samples;
+    }
+    if (Object.keys(from.highlights).length) have.highlights = from.highlights;
+  }
+  have.bookmarks = [...new Set([...have.bookmarks, ...from.bookmarks])].sort((a, b) => a - b);
+  for (const [p, text] of Object.entries(from.notes)) {
+    const had = have.notes[p];
+    if (!had) have.notes[p] = text;
+    else if (!had.includes(text)) have.notes[p] = had + "\n" + text;
+  }
+  have.readSec = Math.max(have.readSec, from.readSec);
+  have.celebrated = have.celebrated || from.celebrated;
+  if (!have.shelf) have.shelf = from.shelf;
+}
+
+/**
+ * Adds the books of a library file to this library, with their places, bookmarks, notes,
+ * highlights, covers and shelves. Books already here are not copied again; they are brought up
+ * to date instead. Returns {added, updated, failed}.
+ */
+export async function importLibrary(file, progress) {
+  const wrong = new Error("That file isn't a MyBookSpace library");
+  let zip, root;
+  try {
+    zip = await readZip(file);
+    root = JSON.parse(new TextDecoder().decode(await zip.get("manifest.json").read()));
+  } catch (e) {
+    throw wrong;
+  }
+  if (!root || root.format !== TRANSFER_FORMAT || !Array.isArray(root.books)) throw wrong;
+  if ((root.version || 1) > 1) throw new Error("That library file was made by a newer MyBookSpace. Update this app first.");
+  const sameApp = root.app === "pc";
+  const ids = new Map(), fresh = [], merges = [];
+  let failed = 0, done = 0;
+  for (const o of root.books) {
+    const have = state.books.find((b) => b.size === Number(o.size) && b.src === o.src);
+    if (have) {
+      ids.set(o.id, have.id);
+      merges.push([have, o]);
+    } else {
+      const book = fromManifest(o, sameApp);
+      let id = book.id;
+      while (!id || find(id) || fresh.some((b) => b.id === id)) id = Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36);
+      ids.set(book.id, id);
+      book.id = id;
+      const entry = zip.get(o.file);
+      let doc = null;
+      try {
+        if (!entry) throw new Error("missing");
+        const blob = await entry.blob();
+        book.kind = await sniff(blob);
+        doc = await openBook(blob, book.kind, book.textSize);
+        fitPages(book, doc.pages);
+        const cover = o.cover && zip.get(o.cover) ? await zip.get(o.cover).blob("image/jpeg") : null;
+        if (!cover) book.ownCover = false;
+        await putFile("book:" + book.id, blob);
+        await putFile("cover:" + book.id, cover || (await firstCover(book, doc)));
+        fresh.push(book);
+      } catch (e) {
+        // One unreadable book is left out; the rest of the library still comes over.
+        console.error(e);
+        failed++;
+        await delFile("book:" + book.id);
+        await delFile("cover:" + book.id);
+      } finally {
+        if (doc) doc.close();
+      }
+    }
+    if (progress) progress(++done, root.books.length);
+  }
+  // New books go to the front, in the order they had on the other device.
+  state.books.unshift(...fresh);
+  for (const [have, o] of merges) mergeInto(have, o);
+  for (const b of fresh) {
+    // A second version stays tucked under its book only if it came over in this file too.
+    const partner = b.partner ? ids.get(b.partner) : null;
+    b.partner = partner && partner !== b.id && fresh.some((o) => o.id === partner) ? partner : "";
+  }
+  for (const b of fresh) if (b.hidden && !state.books.some((o) => o.partner === b.id)) b.hidden = false;
+  for (const s of [...(Array.isArray(root.shelves) ? root.shelves : []), ...state.books.map((b) => b.shelf)]) {
+    const n = String(s || "").trim();
+    if (n && !state.shelves.includes(n) && state.books.some((b) => b.shelf === n)) state.shelves.push(n);
+  }
+  // The reading log keeps the larger figure for each day, so importing twice adds nothing.
+  for (const [day, sec] of Object.entries(root.daily || {})) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(day)) state.daily[day] = Math.max(state.daily[day] || 0, Number(sec) || 0);
+  }
+  await save();
+  return { added: fresh.length, updated: merges.length, failed };
 }

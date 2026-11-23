@@ -46,8 +46,8 @@ import java.util.Locale;
  */
 public class LibraryActivity extends Activity {
 
-    private static final int REQ_PICK = 1, REQ_COVER = 2;
-    private static final String STATE_COVER = "cover_book";
+    private static final int REQ_PICK = 1, REQ_COVER = 2, REQ_EXPORT = 3, REQ_IMPORT = 4;
+    private static final String STATE_COVER = "cover_book", STATE_EXPORT = "export_books";
     private static final int DEFAULT_ACCENT = 0xFFB5651D;
     /** The accent of the colour scheme in use; set each time the page is built. */
     private static int ACCENT = DEFAULT_ACCENT;
@@ -88,6 +88,10 @@ public class LibraryActivity extends Activity {
     private boolean narrow;
     /** Id of the book a cover picture is being picked for, or null. */
     private String coverFor;
+    /** Ids of the books chosen for a library file, while the reader picks where to save it. */
+    private ArrayList<String> exportIds;
+    /** What the long job in hand is doing, shown at the bottom of the page; null when idle. */
+    private String working;
     private String filter = ALL;
     private ScrollView scroll;
     private LinearLayout listBox;
@@ -121,7 +125,10 @@ public class LibraryActivity extends Activity {
         prefs = P.get(this);
         dp = getResources().getDisplayMetrics().density;
         filter = prefs.getString(P.SHELF, ALL);
-        if (state != null) coverFor = state.getString(STATE_COVER);
+        if (state != null) {
+            coverFor = state.getString(STATE_COVER);
+            exportIds = state.getStringArrayList(STATE_EXPORT);
+        }
     }
 
     @Override
@@ -129,6 +136,7 @@ public class LibraryActivity extends Activity {
         super.onSaveInstanceState(out);
         // The picker can push this page out of memory; the book being covered has to survive that.
         out.putString(STATE_COVER, coverFor);
+        out.putStringArrayList(STATE_EXPORT, exportIds);
     }
 
     @Override
@@ -194,6 +202,7 @@ public class LibraryActivity extends Activity {
         }
         if (open && current != null) page.addView(continueCard(current), top(MATCH, WRAP, 14));
         if (open) page.addView(coloursRow(), top(MATCH, WRAP, 14));
+        if (open) page.addView(transferRow(), top(MATCH, WRAP, 14));
 
         if (all.isEmpty()) {
             page.addView(message("Your library is empty.\n\nTap “Add books” and choose the books you want to read (PDF, EPUB or TXT). "
@@ -228,10 +237,10 @@ public class LibraryActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.addView(scroll, new FrameLayout.LayoutParams(MATCH, MATCH));
 
-        busy = text("Adding books…", 15, Color.WHITE, false);
+        busy = text(working != null ? working : "Adding books…", 15, Color.WHITE, false);
         busy.setPadding(d(22), d(12), d(22), d(12));
         busy.setBackground(round(0xE0202020, 24));
-        busy.setVisibility(importing ? View.VISIBLE : View.GONE);
+        busy.setVisibility(importing || working != null ? View.VISIBLE : View.GONE);
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         blp.bottomMargin = d(36);
         root.addView(busy, blp);
@@ -782,6 +791,16 @@ public class LibraryActivity extends Activity {
             if (result == RESULT_OK && data != null && data.getData() != null && b != null) applyCover(b, data.getData());
             return;
         }
+        if (req == REQ_EXPORT) {
+            ArrayList<String> ids = exportIds;
+            exportIds = null;
+            if (result == RESULT_OK && data != null && data.getData() != null && ids != null) runExport(data.getData(), ids);
+            return;
+        }
+        if (req == REQ_IMPORT) {
+            if (result == RESULT_OK && data != null && data.getData() != null) runImport(data.getData());
+            return;
+        }
         if (req != REQ_PICK || result != RESULT_OK || data == null) return;
         final ArrayList<Uri> uris = new ArrayList<>();
         ClipData clip = data.getClipData();
@@ -831,6 +850,164 @@ public class LibraryActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    // ---------------------------------------------------------------- moving the library
+
+    private View transferRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(d(18), d(12), d(18), d(12));
+        row.setBackground(press(round(card, 18)));
+        row.setElevation(lift);
+        TextView name = text(narrow ? "Move your library" : "Move your library to another device", 14, fg, false);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        row.addView(name, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        row.addView(text("Export / Import", 13, ACCENT, false));
+        row.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Move your library")
+                .setItems(new String[]{"Export books to a file…", "Import a library file…"}, (dlg, which) -> {
+                    if (which == 0) chooseExport();
+                    else pickImport();
+                })
+                .show());
+        return row;
+    }
+
+    /** Asks which shelves to put in the file; everything is ticked to start with. */
+    private void chooseExport() {
+        if (working != null || importing) return;
+        final ArrayList<Library.Book> all = lib.list();
+        if (all.isEmpty()) {
+            Toast.makeText(this, "There are no books to export yet", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final ArrayList<String> groups = new ArrayList<>();
+        for (String s : lib.shelves()) {
+            for (Library.Book b : all) {
+                if (s.equals(b.shelf)) {
+                    groups.add(s);
+                    break;
+                }
+            }
+        }
+        for (Library.Book b : all) {
+            if (b.shelf.isEmpty()) {
+                groups.add("");
+                break;
+            }
+        }
+        final String[] labels = new String[groups.size()];
+        final boolean[] ticked = new boolean[groups.size()];
+        for (int i = 0; i < labels.length; i++) {
+            int n = 0;
+            for (Library.Book b : all) if (b.shelf.equals(groups.get(i))) n++;
+            labels[i] = (groups.get(i).isEmpty() ? "Books not on a shelf" : groups.get(i)) + "   (" + n + ")";
+            ticked[i] = true;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Which books go in the file?")
+                .setMultiChoiceItems(labels, ticked, (dlg, which, on) -> ticked[which] = on)
+                .setPositiveButton("Export", (dlg, which) -> {
+                    ArrayList<String> ids = new ArrayList<>();
+                    for (Library.Book b : all) {
+                        int g = groups.indexOf(b.shelf);
+                        if (g >= 0 && ticked[g]) ids.add(b.id);
+                    }
+                    if (ids.isEmpty()) {
+                        Toast.makeText(this, "Nothing was ticked", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    // The reader chooses the folder and the name; the app never needs storage permission.
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("application/octet-stream");
+                    i.putExtra(Intent.EXTRA_TITLE, "MyBookSpace-library-" + new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date()) + ".mbs");
+                    try {
+                        exportIds = ids;
+                        startActivityForResult(i, REQ_EXPORT);
+                    } catch (Exception e) {
+                        exportIds = null;
+                        Toast.makeText(this, "No file picker is available on this device", Toast.LENGTH_LONG).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void pickImport() {
+        if (working != null || importing) return;
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        // File apps do not know what a .mbs file is, so everything has to be allowed.
+        i.setType("*/*");
+        try {
+            startActivityForResult(i, REQ_IMPORT);
+        } catch (Exception e) {
+            Toast.makeText(this, "No file picker is available on this device", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showWork(final String what) {
+        runOnUiThread(() -> {
+            working = what;
+            if (busy != null) {
+                if (what != null) busy.setText(what);
+                busy.setVisibility(what != null || importing ? View.VISIBLE : View.GONE);
+            }
+        });
+    }
+
+    private void workDone(final String message) {
+        runOnUiThread(() -> {
+            working = null;
+            if (isFinishing()) return;
+            covers.clear();
+            build();
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void runExport(final Uri uri, ArrayList<String> ids) {
+        final ArrayList<Library.Book> chosen = new ArrayList<>();
+        for (String id : ids) {
+            Library.Book b = lib.find(id);
+            if (b != null) chosen.add(b);
+        }
+        final int goal = prefs.getInt(P.GOAL_MIN, 20);
+        showWork("Writing the library file…");
+        new Thread(() -> {
+            String message;
+            try {
+                int n = lib.exportTo(uri, chosen, goal, (done, total) -> showWork("Writing the library file…  " + done + " of " + total));
+                message = n + (n == 1 ? " book" : " books") + " saved to the file. Open it in MyBookSpace on the other device.";
+            } catch (Throwable t) {
+                message = "The file couldn't be written" + (t.getMessage() == null ? "" : ": " + t.getMessage());
+                try {
+                    android.provider.DocumentsContract.deleteDocument(getContentResolver(), uri);
+                } catch (Exception ignored) {
+                    // A half-written file may be left behind; nothing in the library is affected.
+                }
+            }
+            workDone(message);
+        }).start();
+    }
+
+    private void runImport(final Uri uri) {
+        showWork("Reading the library file…");
+        new Thread(() -> {
+            String message;
+            try {
+                int[] r = lib.importFrom(uri, (done, total) -> showWork("Bringing in books…  " + done + " of " + total));
+                message = r[0] + (r[0] == 1 ? " book added" : " books added");
+                if (r[1] > 0) message += ", " + r[1] + " already here brought up to date";
+                if (r[2] > 0) message += ", " + r[2] + " couldn't be read";
+            } catch (Throwable t) {
+                message = t.getMessage() == null || t instanceof OutOfMemoryError ? "That file couldn't be read" : t.getMessage();
+            }
+            workDone(message);
+        }).start();
     }
 
     // ---------------------------------------------------------------- covers

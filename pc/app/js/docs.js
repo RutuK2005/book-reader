@@ -1,6 +1,7 @@
 // Opens a book file and draws its pages. PDFs are drawn by pdf.js; EPUB and text files are laid
 // out into pages of a fixed size, so a page number means the same thing whatever the window size.
 import * as pdfjs from "../vendor/pdfjs/pdf.min.mjs";
+import { readZip } from "./zip.js";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL("../vendor/pdfjs/pdf.worker.min.mjs", import.meta.url).href;
 const PDF_ASSETS = new URL("../vendor/pdfjs/", import.meta.url).href;
@@ -172,43 +173,6 @@ export async function openPdf(blob) {
   return new PdfBook(pdf);
 }
 
-// ---------------------------------------------------------------- zip (for EPUB)
-
-async function inflate(bytes) {
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-/** Reads a zip file's directory. Returns a Map of path -> function giving the file's bytes. */
-function unzip(buf) {
-  const v = new DataView(buf), u8 = new Uint8Array(buf);
-  let end = -1;
-  for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 66000); i--) {
-    if (v.getUint32(i, true) === 0x06054b50) {
-      end = i;
-      break;
-    }
-  }
-  if (end < 0) throw new Error("That file isn't a readable EPUB");
-  const count = v.getUint16(end + 10, true);
-  let at = v.getUint32(end + 16, true);
-  const files = new Map(), utf8 = new TextDecoder();
-  for (let n = 0; n < count && at + 46 <= buf.byteLength; n++) {
-    if (v.getUint32(at, true) !== 0x02014b50) break;
-    const method = v.getUint16(at + 10, true), size = v.getUint32(at + 20, true);
-    const nameLen = v.getUint16(at + 28, true), extra = v.getUint16(at + 30, true), comment = v.getUint16(at + 32, true);
-    const local = v.getUint32(at + 42, true);
-    const name = utf8.decode(u8.subarray(at + 46, at + 46 + nameLen));
-    files.set(name, async () => {
-      const start = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
-      const raw = u8.subarray(start, start + size);
-      return method === 0 ? raw : inflate(raw);
-    });
-    at += 46 + nameLen + extra + comment;
-  }
-  return files;
-}
-
 function resolvePath(base, href) {
   const parts = base.split("/").slice(0, -1);
   for (const seg of decodeURIComponent(href.split("#")[0]).split("/")) {
@@ -225,11 +189,16 @@ const IMAGE_TYPES = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", g
 const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 async function parseEpub(blob) {
-  const files = unzip(await blob.arrayBuffer());
+  let files;
+  try {
+    files = await readZip(blob);
+  } catch (e) {
+    throw new Error("That file isn't a readable EPUB");
+  }
   const text = async (path) => {
-    const get = files.get(path);
-    if (!get) throw new Error("That EPUB is missing a part: " + path);
-    return new TextDecoder().decode(await get());
+    const entry = files.get(path);
+    if (!entry) throw new Error("That EPUB is missing a part: " + path);
+    return new TextDecoder().decode(await entry.read());
   };
   const xml = (s) => new DOMParser().parseFromString(s, "application/xml");
   const container = xml(await text("META-INF/container.xml"));
@@ -256,10 +225,10 @@ async function parseEpub(blob) {
   const urls = new Map();
   const imageUrl = async (path) => {
     if (urls.has(path)) return urls.get(path);
-    const get = files.get(path);
-    if (!get) return null;
+    const entry = files.get(path);
+    if (!entry) return null;
     const ext = path.split(".").pop().toLowerCase();
-    const url = URL.createObjectURL(new Blob([await get()], { type: IMAGE_TYPES[ext] || "application/octet-stream" }));
+    const url = URL.createObjectURL(await entry.blob(IMAGE_TYPES[ext] || "application/octet-stream"));
     urls.set(path, url);
     return url;
   };

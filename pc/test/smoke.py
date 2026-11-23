@@ -98,13 +98,10 @@ with sync_playwright() as pw:
     with page.expect_file_chooser() as fc:
         page.click(".menu-item >> text=Choose a picture")
     fc.value.set_files(os.path.join(OUT, "newcover.png"))
-    page.wait_for_function("""async () => {
-        const r = indexedDB.open('mybookspace');
-        const db = await new Promise(ok => r.onsuccess = () => ok(r.result));
-        const g = db.transaction('kv').objectStore('kv').get('state');
-        const s = await new Promise(ok => g.onsuccess = () => ok(g.result));
-        return s.books.some(b => b.ownCover);
-    }""")
+    for _ in range(50):
+        if book(page, "Sample Book")["ownCover"]:
+            break
+        page.wait_for_timeout(100)
     check("own cover set", book(page, "Sample Book")["ownCover"] is True)
     page.wait_for_timeout(400)
     shot(page, "04-own-cover")
@@ -265,6 +262,87 @@ with sync_playwright() as pw:
     page.keyboard.press("Escape")
     page.keyboard.press("Escape")
     page.wait_for_selector(".home", state="visible")
+
+    # ---- export the library to one file, and bring it into an empty library
+    page.click(".colours:has-text('Move your library')")
+    page.click(".menu-item >> text=Export books to a file")
+    check("export lists the shelves", "Work" in page.inner_text(".dialog") and "Books not on a shelf" in page.inner_text(".dialog"),
+          page.inner_text(".dialog"))
+    shot(page, "19a-export-dialog")
+    with page.expect_download(timeout=60000) as dl:
+        page.click(".btn.primary >> text=Export")
+    library_file = os.path.join(OUT, "exported.mbs")
+    dl.value.save_as(library_file)
+    check("library file name", dl.value.suggested_filename.startswith("MyBookSpace-library-") and dl.value.suggested_filename.endswith(".mbs"),
+          dl.value.suggested_filename)
+    import json
+    import zipfile
+    with zipfile.ZipFile(library_file) as z:
+        names = z.namelist()
+        manifest = json.loads(z.read("manifest.json"))
+        check("library file is a sound zip, manifest first", z.testzip() is None and names[0] == "manifest.json", names[:3])
+        check("library file holds 3 books and 3 covers", sum(n.startswith("books/") for n in names) == 3
+              and sum(n.startswith("covers/") for n in names) == 3, names)
+        check("manifest describes the books", manifest["format"] == "mybookspace-library" and len(manifest["books"]) == 3, manifest.get("format"))
+
+    other = browser.new_context(viewport={"width": 1280, "height": 860}, bypass_csp=True).new_page()
+    other.on("pageerror", lambda e: errors.append("import: " + str(e)))
+    other.goto(URL)
+    other.wait_for_selector(".home")
+    with other.expect_file_chooser() as fc:
+        other.click("text=+  Add books")
+    fc.value.set_files(library_file)
+    other.wait_for_function("document.querySelectorAll('.book').length === 3", timeout=60000)
+    moved = book(other, "Sample Book")
+    check("imported: place, bookmark, note, highlight", moved["page"] == 40 and moved["bookmarks"] == [3]
+          and moved["notes"].get("3") == "A thought worth keeping" and len(moved["highlights"].get("3", [])) == 1, moved)
+    check("imported: shelf and own cover", moved["shelf"] == "Work" and moved["ownCover"] is True and "Work" in state(other)["shelves"],
+          (moved["shelf"], moved["ownCover"]))
+    check("imported: epub keeps its text size and place", book(other, "Pride and Testing")["pages"] == book(page, "Pride and Testing")["pages"]
+          and book(other, "Pride and Testing")["page"] == book(page, "Pride and Testing")["page"])
+    other.wait_for_function("[...document.querySelectorAll('.book img')].every(i => i.complete && i.naturalWidth > 0)")
+    shot(other, "19b-imported")
+    # Importing the same file again must not duplicate anything.
+    with other.expect_file_chooser() as fc:
+        other.click("text=+  Add books")
+    fc.value.set_files(library_file)
+    other.wait_for_selector("#toast.show >> text=already here")
+    check("importing twice adds nothing", len(state(other)["books"]) == 3, len(state(other)["books"]))
+
+    # A file as the Android app writes it: streamed, so sizes follow each entry, and a text book
+    # whose page numbers mean something different there.
+    android_file = os.path.join(OUT, "from-android.mbs")
+
+    class Stream:
+        def __init__(self, f):
+            self.f = f
+
+        def write(self, b):
+            return self.f.write(b)
+
+        def flush(self):
+            self.f.flush()
+
+    amanifest = {"format": "mybookspace-library", "version": 1, "app": "android", "shelves": ["Tablet shelf"],
+                 "daily": {"2026-11-20": 900}, "goalMin": 30, "books": [{
+                     "id": "andr1", "title": "From The Tablet", "src": "tablet-book.txt", "shelf": "Tablet shelf", "kind": "txt",
+                     "file": "books/andr1.txt", "pages": 100, "page": 50, "opened": 5, "added": 4,
+                     "size": os.path.getsize(os.path.join(OUT, "notes_file.txt")) + 7, "bookmarks": [10, 50], "notes": {"50": "halfway"},
+                     "highlights": {"50": [[0.1, 0.1, 0.5, 0.2, 2]]}, "textSize": 12.5, "partner": "", "hidden": False}]}
+    with open(android_file, "wb") as raw:
+        with zipfile.ZipFile(Stream(raw), "w", zipfile.ZIP_DEFLATED, compresslevel=0) as z:
+            z.writestr("manifest.json", json.dumps(amanifest))
+            z.writestr("books/andr1.txt", open(os.path.join(OUT, "notes_file.txt"), "rb").read() + b" tablet")
+    with other.expect_file_chooser() as fc:
+        other.click("text=+  Add books")
+    fc.value.set_files(android_file)
+    other.wait_for_function("document.querySelectorAll('.book').length === 4", timeout=60000)
+    tb = book(other, "From The Tablet")
+    half = tb["pages"] // 2
+    check("android file: text book lands at the same point", tb["kind"] == "txt" and abs(tb["page"] - half) <= 1
+          and tb["notes"].get(str(tb["page"])) == "halfway" and tb["highlights"] == {} and tb["textSize"] == 19, tb)
+    check("android file: shelf and reading log", "Tablet shelf" in state(other)["shelves"] and state(other)["daily"].get("2026-11-20") == 900)
+    other.context.close()
 
     # ---- text file
     page.click(".book:has-text('notes file')")

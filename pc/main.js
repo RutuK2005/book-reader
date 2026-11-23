@@ -6,7 +6,8 @@ const path = require("path");
 const { pathToFileURL } = require("url");
 
 const APP_DIR = path.join(__dirname, "app");
-const BOOK_TYPES = [".pdf", ".epub", ".txt"];
+// Books, and library files exported from MyBookSpace on another device.
+const BOOK_TYPES = [".pdf", ".epub", ".txt", ".mbs"];
 
 // The library is stored under this address, so it must never change between versions.
 protocol.registerSchemesAsPrivileged([

@@ -14,6 +14,16 @@ let filter = ALL, query = "", searching = false, importing = 0;
 const coverUrls = new Map();
 /** What is being dragged: {book} or {tab}. Kept here because drag data cannot carry objects. */
 let dragging = null;
+/** What the long job in hand is doing, shown at the bottom of the page; null when idle. */
+let working = null;
+
+function showWork(text) {
+  working = text;
+  const el = root.querySelector(".busy");
+  if (!el) return;
+  el.textContent = text || "Adding books…";
+  el.classList.toggle("show", !!text || importing > 0);
+}
 
 export function init(el, onOpen) {
   root = el;
@@ -97,6 +107,7 @@ export function build() {
     }
     if (current) page.append(continueCard(current));
     page.append(coloursRow());
+    page.append(transferRow());
   }
   if (!all.length) {
     page.append(h("p", { class: "empty big" },
@@ -110,7 +121,7 @@ export function build() {
     fillList(listBox);
   }
   root.append(page);
-  root.append(h("div", { class: "busy" + (importing ? " show" : ""), text: "Adding books…" }));
+  root.append(h("div", { class: "busy" + (importing || working ? " show" : ""), text: working || "Adding books…" }));
   root.scrollTop = keep;
 }
 
@@ -541,10 +552,84 @@ async function applyCover(b, change) {
   build();
 }
 
+// ---------------------------------------------------------------- moving the library
+
+function transferRow() {
+  return h("button", { class: "card row colours", onclick: async () => {
+    const i = await menu("Move your library", ["Export books to a file…", "Import a library file…"]);
+    if (i === 0) chooseExport();
+    else if (i === 1) addFiles(await pickFiles(".mbs,.zip", false));
+  } },
+    h("span", { class: "grow", text: "Move your library to another device" }),
+    h("span", { class: "accent-text", text: "Export / Import" }));
+}
+
+/** Asks which shelves to put in the file; everything is ticked to start with. */
+async function chooseExport() {
+  if (working || importing) return;
+  const all = store.list();
+  if (!all.length) {
+    toast("There are no books to export yet");
+    return;
+  }
+  const groups = store.state.shelves.filter((s) => all.some((b) => b.shelf === s));
+  if (all.some((b) => !b.shelf)) groups.push("");
+  const boxes = groups.map((g) => {
+    const input = h("input", { type: "checkbox", checked: true });
+    const n = all.filter((b) => b.shelf === g).length;
+    return { g, input, row: h("label", { class: "check" }, input, h("span", { text: `${g || "Books not on a shelf"}   (${n})` })) };
+  });
+  const ok = await dialog({
+    title: "Which books go in the file?",
+    body: h("div", null, boxes.map((b) => b.row),
+      h("p", { class: "muted", text: "The file holds the books themselves, their covers, your place in each, and your bookmarks, notes and highlights. Open it in MyBookSpace on the other device." })),
+    buttons: [{ label: "Cancel", value: false }, { label: "Export", primary: true, value: true }],
+  });
+  if (!ok) return;
+  const ticked = boxes.filter((b) => b.input.checked).map((b) => b.g);
+  const chosen = all.filter((b) => ticked.includes(b.shelf));
+  if (!chosen.length) {
+    toast("Nothing was ticked");
+    return;
+  }
+  showWork("Writing the library file…");
+  try {
+    const { blob, count } = await store.exportLibrary(chosen, (done, total) => showWork(`Writing the library file…  ${done} of ${total}`));
+    const d = new Date();
+    const stamp = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    const a = h("a", { href: URL.createObjectURL(blob), download: `MyBookSpace-library-${stamp}.mbs` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    toast(`${count} ${count === 1 ? "book" : "books"} put in the file. Open it in MyBookSpace on the other device.`, 6000);
+  } catch (e) {
+    console.error(e);
+    toast(e.message || "The file couldn't be written", 6000);
+  }
+  showWork(null);
+}
+
+async function importLibrary(blob) {
+  showWork("Reading the library file…");
+  try {
+    const r = await store.importLibrary(blob, (done, total) => showWork(`Bringing in books…  ${done} of ${total}`));
+    let message = `${r.added} ${r.added === 1 ? "book" : "books"} added`;
+    if (r.updated) message += `, ${r.updated} already here brought up to date`;
+    if (r.failed) message += `, ${r.failed} couldn't be read`;
+    showWork(null);
+    coverUrls.forEach((u) => u && URL.revokeObjectURL(u));
+    coverUrls.clear();
+    return message;
+  } catch (e) {
+    console.error(e);
+    showWork(null);
+    return e.message || "That file couldn't be read";
+  }
+}
+
 // ---------------------------------------------------------------- adding books
 
 export async function pick() {
-  addFiles(await pickFiles(BOOK_ACCEPT, true));
+  addFiles(await pickFiles(BOOK_ACCEPT + ",.mbs", true));
 }
 
 export async function addFiles(files) {
@@ -556,6 +641,12 @@ export async function addFiles(files) {
   let error = null, last = null;
   for (const f of files) {
     try {
+      // A library file from another device brings its books in with everything done in them.
+      const blob = f instanceof Blob ? f : new Blob([f.data]);
+      if (await store.isLibraryFile(blob, f.name || "")) {
+        error = await importLibrary(blob);
+        continue;
+      }
       const b = await store.importFile(f);
       if (shelf && !b.shelf) b.shelf = shelf;
       last = b;
