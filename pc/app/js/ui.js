@@ -55,10 +55,24 @@ export function dialog({ title, body, buttons = [{ label: "Close" }], wide = fal
   return new Promise((resolve) => {
     const shade = h("div", { class: "shade" });
     const box = h("div", { class: "dialog" + (wide ? " wide" : ""), role: "dialog" });
+    const before = document.activeElement;
+    let closed = false;
+    // Escape closes the dialog on top wherever the focus has wandered to.
+    const escape = (e) => {
+      if (e.key !== "Escape" || open[open.length - 1] !== api || shade.contains(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      close(undefined);
+    };
     const close = (value) => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener("keydown", escape, true);
       const i = open.indexOf(api);
       if (i >= 0) open.splice(i, 1);
       shade.remove();
+      // The focus goes back to where it was, not to the top of the page.
+      if (before && before.isConnected && typeof before.focus === "function") before.focus({ preventScroll: true });
       resolve(value);
     };
     const api = { close };
@@ -82,12 +96,26 @@ export function dialog({ title, body, buttons = [{ label: "Close" }], wide = fal
     shade.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") close(undefined);
+      if (e.key === "Tab") {
+        // Tab stays inside the dialog instead of reaching the page behind it.
+        const stops = [...box.querySelectorAll("button, input, textarea, select, a[href], [tabindex]:not([tabindex='-1'])")].filter((n) => !n.disabled && n.offsetParent !== null);
+        if (!stops.length) return e.preventDefault();
+        const first = stops[0], last = stops[stops.length - 1];
+        if (e.shiftKey && (document.activeElement === first || document.activeElement === box)) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
       if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "BUTTON") {
         const primary = buttons.find((b) => b.primary);
         if (primary) close(typeof primary.value === "function" ? primary.value() : primary.value);
       }
     });
     document.body.append(shade);
+    document.addEventListener("keydown", escape, true);
     open.push(api);
     box.tabIndex = -1;
     box.focus();

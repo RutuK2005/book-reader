@@ -1,6 +1,6 @@
 // The reading screen: one page (or a two-page spread in a wide window), turned by clicking,
 // dragging, the keyboard or the mouse wheel, with the settings on a sheet that stays out of the way.
-import { h, clear, toast, dialog, menu, ask, dialogOpen, minutes, hex } from "./ui.js";
+import { h, clear, toast, dialog, menu, ask, confirm, dialogOpen, minutes, hex } from "./ui.js";
 import * as store from "./store.js";
 import { openBook, TEXT_SIZES } from "./docs.js";
 import { THEME_NAMES, THEME_BG, THEME_FG, isDark, tint, matrix, MARK_COLORS } from "./themes.js";
@@ -21,7 +21,13 @@ let zoom = 1, panX = 0, panY = 0, sharpenTimer = 0;
 let menuVisible = false, marking = false, lastMark = null;
 let autoSec = 0, autoTimer = 0, sleepMin = 0, sleepTimer = 0, sleeping = false;
 let lastTurnAt = 0, lastCredit = 0, lastInput = 0, saveTimer = 0, tickTimer = 0, resizeTimer = 0;
-let holdTimer = 0, riffleTimer = 0, wheelAcc = 0, lastWheelTurn = 0, thumbSeq = 0;
+let holdTimer = 0, riffleTimer = 0, wheelAcc = 0, lastWheelTurn = 0, lastWheelAt = 0, thumbSeq = 0;
+let thumbTimer = 0, thumbJob = null, clickTimer = 0;
+/** Bumped by every open and close, so an open that is overtaken gives up instead of finishing. */
+let openSeq = 0;
+/** A page asked for (Home, End, go to page) while a turn was still running. */
+let pendingGo = null;
+let fullscreen = false;
 let audio = null, pageSound = null, battery = null;
 const el = {};
 
@@ -52,11 +58,7 @@ export function init(container, closed) {
   el.dim = h("div", { class: "dim-layer" });
   el.loading = h("div", { class: "loading", text: "Opening…" });
   el.thumb = h("div", { class: "thumb" });
-  el.sleep = h("div", { class: "sleep", text: "Sleep timer ended\n\nClick to keep reading", onclick: () => {
-    sleeping = false;
-    el.sleep.classList.remove("show");
-    lastTurnAt = lastCredit = now();
-  } });
+  el.sleep = h("div", { class: "sleep", text: "Sleep timer ended\n\nClick or press a key to keep reading", onclick: wake });
   el.confetti = h("canvas", { class: "confetti" });
   root.append(el.stage, el.rulerTop, el.rulerBottom, el.footer, el.dim, el.loading);
   buildMenu();
@@ -75,6 +77,13 @@ export function init(container, closed) {
     resizeTimer = setTimeout(relayout, 120);
   });
   window.addEventListener("blur", () => book && credit());
+  // The window can be closed at any moment: the place in the book is written down as it goes.
+  window.addEventListener("pagehide", () => {
+    if (!book) return;
+    credit();
+    store.save();
+  });
+  if (window.desktop && window.desktop.onFullscreen) window.desktop.onFullscreen((on) => (fullscreen = on));
   if (navigator.getBattery) {
     navigator.getBattery().then((b) => {
       battery = b;
@@ -117,7 +126,13 @@ function buildMenu() {
     style: { background: hex(THEME_BG[i]), color: hex(THEME_FG[i]) },
     onclick: () => {
       store.setPref("theme", i);
+      if (effectiveTheme() !== i) {
+        // The night timer would keep its own theme on until morning; a theme picked by hand wins.
+        store.setPref("autoNight", false);
+        toast("Night theme timer turned off");
+      }
       applyTheme();
+      refreshMenu();
     } }));
   display.append(h("div", { class: "row center-row" }, el.swatches));
   el.textLabel = h("span", { class: "grow center" });
@@ -240,13 +255,22 @@ function selectTab(i) {
 // ---------------------------------------------------------------- opening and closing
 
 export async function open(b) {
+  // A book already open (or still opening) is put away first, without going back to the library.
+  if (book) close(true);
+  const my = ++openSeq;
   book = b;
   ready = false;
   generation++;
   screen = 0;
   zoom = 1;
   panX = panY = 0;
+  busy = false;
+  drag = null;
+  queued = 0;
+  pendingGo = null;
   marking = false;
+  root.classList.remove("marking");
+  el.stage.classList.remove("zoomed");
   menuVisible = false;
   autoSec = sleepMin = 0;
   sleeping = false;
@@ -256,11 +280,13 @@ export async function open(b) {
   applyTheme();
   applyBrightness();
   showMenu(false);
+  let opened = null;
   try {
     const blob = await store.bookFile(b);
     if (!blob) throw new Error("That book's file is missing from the library");
-    doc = await openBook(blob, b.kind, b.textSize);
+    if (my === openSeq) opened = await openBook(blob, b.kind, b.textSize);
   } catch (e) {
+    if (my !== openSeq) return;
     console.error(e);
     toast(e.message || "That book couldn't be opened");
     el.loading.classList.remove("show");
@@ -269,6 +295,12 @@ export async function open(b) {
     onClose();
     return;
   }
+  if (my !== openSeq) {
+    // Closed, or another book opened, while this one was loading.
+    if (opened) opened.close();
+    return;
+  }
+  doc = opened;
   if (b.kind !== "pdf" && doc.pages !== b.pages) remapPages(doc.pages);
   b.pages = doc.pages;
   b.page = clamp(b.page, 0, b.pages - 1);
@@ -280,6 +312,7 @@ export async function open(b) {
   el.textRow.hidden = b.kind === "pdf";
   el.crop.row.hidden = b.kind !== "pdf";
   await relayout();
+  if (my !== openSeq) return;
   el.loading.classList.remove("show");
   if (prefs().crop) ensureCrop();
   clearInterval(tickTimer);
@@ -298,29 +331,55 @@ export function isOpen() {
   return book !== null;
 }
 
-export function close() {
+export function close(quiet = false) {
   if (!book) return;
   credit();
+  openSeq++;
   clearTimeout(saveTimer);
   clearInterval(tickTimer);
   clearTimeout(autoTimer);
   clearTimeout(sleepTimer);
   clearInterval(riffleTimer);
+  clearTimeout(holdTimer);
+  clearTimeout(clickTimer);
+  clearTimeout(thumbTimer);
+  clearTimeout(sharpenTimer);
+  clearTimeout(resizeTimer);
   generation++;
   dropScreens();
   if (doc) doc.close();
   doc = null;
   book = null;
   ready = false;
+  busy = false;
+  drag = null;
+  ptr = null;
+  queued = 0;
+  pendingGo = null;
+  sleeping = false;
+  marking = false;
+  zoom = 1;
+  root.classList.remove("marking");
+  el.stage.classList.remove("zoomed");
+  el.loading.classList.remove("show");
   store.save();
-  root.hidden = true;
   el.thumb.classList.remove("show");
   el.sleep.classList.remove("show");
   if (window.desktop) {
     window.desktop.setTitle("MyBookSpace");
     window.desktop.keepAwake(false);
   }
+  if (quiet === true) return;
+  root.hidden = true;
   onClose();
+}
+
+function wake() {
+  if (!sleeping) return;
+  sleeping = false;
+  el.sleep.classList.remove("show");
+  lastTurnAt = lastCredit = lastInput = now();
+  if (window.desktop && book) window.desktop.keepAwake(true);
 }
 
 /** Shown once: a map of where to click, laid over the page. Any click dismisses it. */
@@ -366,6 +425,8 @@ function dropScreens() {
     e.el.remove();
   }
   cache.clear();
+  // A page caught half-way through a turn is no longer in the list above; it goes as well.
+  el.stage.querySelectorAll(".screen").forEach((n) => n.remove());
   resetTurnStyles();
 }
 
@@ -376,8 +437,11 @@ async function relayout() {
   dropScreens();
   drag = null;
   busy = false;
+  queued = 0;
+  pendingGo = null;
   zoom = 1;
   panX = panY = 0;
+  el.stage.classList.remove("zoomed");
   L = { W: el.stage.clientWidth, H: el.stage.clientHeight, dual: false };
   L.dual = prefs().dual && L.W >= L.H * 1.25 && book.pages > 1;
   screen = clamp(screenOf(book.page), 0, screens() - 1);
@@ -510,8 +574,15 @@ function place(from, to, dir, t, mode) {
 
 function animate(from, to, dir, mode, t0, t1) {
   return new Promise((done) => {
-    const start = now(), ms = ANIM_MS * Math.max(0.25, Math.abs(t1 - t0));
+    const start = now(), ms = ANIM_MS * Math.max(0.25, Math.abs(t1 - t0)), gen = generation;
     const step = () => {
+      if (gen !== generation) {
+        // The pages were laid out again, or the book closed, mid-turn: these two are stale.
+        from.el.remove();
+        to.el.remove();
+        resetTurnStyles();
+        return done();
+      }
       const k = Math.min(1, (now() - start) / ms);
       const eased = 1 - Math.pow(1 - k, 3);
       place(from, to, dir, t0 + (t1 - t0) * eased, mode);
@@ -542,7 +613,13 @@ export async function turn(dir, animated = true) {
   const gen = generation;
   if (zoom !== 1) setZoom(1, 0, 0);
   const from = cache.get(screen), to = entry(target);
-  await to.built;
+  try {
+    await to.built;
+  } catch (e) {
+    // A page that cannot be read must not leave the reader unable to turn.
+    if (gen === generation) busy = false;
+    return;
+  }
   const mode = animated ? prefs().anim : 2;
   if (mode !== 2) await Promise.race([to.drawn, sleep(450)]);
   if (gen !== generation) return;
@@ -552,7 +629,17 @@ export async function turn(dir, animated = true) {
   else el.stage.append(to.el);
   commit(target, dir);
   busy = false;
-  if (queued) {
+  afterTurn();
+}
+
+/** What was asked for while a turn was running: a jump to a page first, otherwise one more turn. */
+function afterTurn() {
+  if (pendingGo !== null) {
+    const p = pendingGo;
+    pendingGo = null;
+    queued = 0;
+    goToPage(p);
+  } else if (queued) {
     const q = queued;
     queued = 0;
     turn(q, false);
@@ -567,16 +654,29 @@ function commit(target, dir) {
 
 async function goToPage(page) {
   if (!ready) return;
+  if (busy || drag) {
+    pendingGo = page;
+    return;
+  }
   const target = clamp(screenOf(clamp(page, 0, book.pages - 1)), 0, screens() - 1);
   if (target === screen) return;
+  busy = true;
+  queued = 0;
   const gen = generation;
   if (zoom !== 1) setZoom(1, 0, 0);
   const from = cache.get(screen), to = entry(target);
-  await to.built;
+  try {
+    await to.built;
+  } catch (e) {
+    if (gen === generation) busy = false;
+    return;
+  }
   if (gen !== generation) return;
   if (from) from.el.remove();
   el.stage.append(to.el);
   commit(target, 0);
+  busy = false;
+  afterTurn();
 }
 
 function pageChanged(dir) {
@@ -592,8 +692,10 @@ function pageChanged(dir) {
   }
   lastTurnAt = t;
   credit();
-  book.page = firstPage(screen);
-  if (dir === 1 && !book.celebrated && book.page + pagesOn(screen) >= book.pages) {
+  // On the last screen the book has been read to its last page, even where a spread starts one earlier.
+  const last = screen >= screens() - 1;
+  book.page = last ? book.pages - 1 : firstPage(screen);
+  if (dir === 1 && !book.celebrated && last) {
     book.celebrated = true;
     celebrate();
   }
@@ -632,8 +734,9 @@ function zone(x) {
 }
 
 function pointerDown(e) {
-  if (e.button !== 0 || !ready) return;
+  if (e.button !== 0 || !ready || e.isPrimary === false) return;
   lastInput = now();
+  clearInterval(riffleTimer);
   ptr = { x0: e.clientX, y0: e.clientY, moved: false, mode: null, panX, panY, held: false };
   el.stage.setPointerCapture(e.pointerId);
   if (marking) {
@@ -662,7 +765,8 @@ function pointerMove(e) {
     clearTimeout(holdTimer);
     if (zoom > 1) ptr.mode = "pan";
     else if (prefs().rulerOn && Math.abs(dy) > Math.abs(dx)) ptr.mode = "ruler";
-    else if (Math.abs(dx) > Math.abs(dy) && !busy && prefs().anim !== 2) {
+    else if (Math.abs(dx) > Math.abs(dy) && prefs().anim === 2) ptr.mode = "swipe";
+    else if (Math.abs(dx) > Math.abs(dy) && !busy) {
       const dir = dx < 0 ? 1 : -1, target = screen + dir;
       if (target >= 0 && target < screens() && cache.get(screen)) {
         ptr.mode = "turn";
@@ -703,39 +807,57 @@ async function pointerUp(e) {
     return;
   }
   if (p.mode === "ruler") return store.save();
+  if (p.mode === "swipe") {
+    // With the page-turn animation off, a sideways drag still turns the page, just without the show.
+    const dx = e.clientX - p.x0;
+    if (e.type !== "pointercancel" && Math.abs(dx) > 50) turn(dx < 0 ? 1 : -1, false);
+    return;
+  }
   if (p.mode === "turn" && drag) {
     const d = drag, mode = prefs().anim;
     // A quick flick turns the page even if it was not dragged far.
     const flick = d.dir === 1 ? d.speed < -0.5 : d.speed > 0.5;
     const finish = d.t > 0.3 || flick;
     busy = true;
-    await d.to.built;
-    if (d.gen !== generation) {
-      drag = null;
-      busy = false;
+    try {
+      await d.to.built;
+    } catch (err) {
+      if (d.gen === generation) {
+        drag = null;
+        busy = false;
+        settle(d.from, d.to);
+      }
       return;
     }
+    if (d.gen !== generation) return;
     await animate(d.from, d.to, d.dir, mode, d.t, finish ? 1 : 0);
+    // Laid out again, or closed, meanwhile: that already cleared the turn, and may have begun another.
+    if (d.gen !== generation) return;
     drag = null;
     busy = false;
-    if (d.gen !== generation) return;
     if (finish) {
       settle(d.to, d.from);
       commit(screen + d.dir, d.dir);
     } else {
       settle(d.from, d.to);
     }
+    afterTurn();
     return;
   }
   if (p.moved || p.held || e.type === "pointercancel") return;
   if (menuVisible) return showMenu(false);
   const side = zone(e.clientX);
-  if (side !== 0 && zoom === 1) turn(side);
-  else showMenu(true);
+  if (side !== 0 && zoom === 1) return turn(side);
+  // A short wait, so that the first click of a double-click (zoom) does not flash the settings.
+  clearTimeout(clickTimer);
+  clickTimer = setTimeout(() => {
+    if (ready && !marking && !busy) showMenu(true);
+  }, 240);
 }
 
 function doubleClick(e) {
-  if (!ready || marking || zone(e.clientX) !== 0) return;
+  clearTimeout(clickTimer);
+  if (!ready || marking || (zoom === 1 && zone(e.clientX) !== 0)) return;
   const r = el.stage.getBoundingClientRect();
   if (zoom === 1) setZoom(2.2, e.clientX - r.left, e.clientY - r.top);
   else setZoom(1, 0, 0);
@@ -758,8 +880,14 @@ function wheel(e) {
     return;
   }
   if (menuVisible) return;
+  const t = now();
+  // A new gesture starts from nothing, and a touchpad's long glide counts as one turn, not several.
+  if (t - lastWheelAt > 300) wheelAcc = 0;
+  lastWheelAt = t;
+  const glide = e.deltaMode === 0 && Math.abs(e.deltaY) + Math.abs(e.deltaX) < 50;
+  if (t - lastWheelTurn <= (glide ? 480 : 160)) return;
   wheelAcc += e.deltaY + e.deltaX;
-  if (Math.abs(wheelAcc) >= 60 && now() - lastWheelTurn > 160) {
+  if (Math.abs(wheelAcc) >= 60) {
     turn(wheelAcc > 0 ? 1 : -1, false);
     wheelAcc = 0;
     lastWheelTurn = now();
@@ -771,12 +899,26 @@ export function key(e) {
   if (!book || dialogOpen()) return false;
   if (["INPUT", "TEXTAREA"].includes(e.target.tagName) && e.target.type !== "range" && e.target.type !== "checkbox") return false;
   lastInput = now();
-  if (sleeping) return false;
   const k = e.key;
+  if (sleeping) {
+    wake();
+    return true;
+  }
+  if (!ready) {
+    // Still opening: the only thing to do is to give up and go back.
+    if (k !== "Escape") return false;
+    close();
+    return true;
+  }
+  // Ctrl, Alt and the Windows key belong to the system's own shortcuts, apart from zooming.
+  if ((e.ctrlKey || e.altKey || e.metaKey) && !["+", "=", "-", "0"].includes(k)) return false;
+  // A button or switch that has the focus is pressed by Space and Enter, as everywhere else.
+  if ((k === " " || k === "Enter") && (e.target.tagName === "BUTTON" || e.target.type === "checkbox")) return false;
   if (k === "Escape") {
     if (marking) setMarking(false);
     else if (zoom !== 1) setZoom(1, 0, 0);
     else if (menuVisible) showMenu(false);
+    else if (fullscreen && window.desktop) window.desktop.toggleFullscreen();
     else close();
   } else if (k === "ArrowRight" || k === "PageDown" || (k === " " && !e.shiftKey) || k === "ArrowDown") turn(1, !e.repeat);
   else if (k === "ArrowLeft" || k === "PageUp" || (k === " " && e.shiftKey) || k === "ArrowUp") turn(-1, !e.repeat);
@@ -862,8 +1004,10 @@ function refreshMenu() {
   el.pageLabel.textContent = pageText(book.page);
   el.pageSeek.max = book.pages - 1;
   el.pageSeek.value = book.page;
-  el.star.textContent = book.bookmarks.includes(book.page) ? "★" : "☆";
-  el.star.classList.toggle("on", book.bookmarks.includes(book.page));
+  const shown = ready ? shownPages() : [book.page];
+  const starred = shown.some((p) => book.bookmarks.includes(p));
+  el.star.textContent = starred ? "★" : "☆";
+  el.star.classList.toggle("on", starred);
   el.animBtns.forEach((b, i) => b.classList.toggle("on", i === p.anim));
   el.bright.value = p.bright < 0 ? 100 : Math.round(p.bright * 100);
   el.bright.disabled = p.bright < 0;
@@ -879,15 +1023,15 @@ function refreshMenu() {
   el.rulerBtn.classList.toggle("on", p.rulerOn);
   el.markBtn.textContent = marking ? "Highlighting…" : "Highlight";
   el.markBtn.classList.toggle("on", marking);
-  el.noteBtn.textContent = book.notes[book.page] ? "Edit this page's note" : "Add a note";
+  el.noteBtn.textContent = shown.some((p) => book.notes[p]) ? "Edit this page's note" : "Add a note";
   el.rulerSize.value = p.rulerBand;
   el.autoBtn.textContent = autoSec ? `Auto-turn: every ${autoSec} s` : "Auto-turn: off";
   el.autoBtn.classList.toggle("on", autoSec > 0);
   el.sleepBtn.textContent = sleepMin ? `Sleep timer: ${sleepMin} min` : "Sleep timer: off";
   el.sleepBtn.classList.toggle("on", sleepMin > 0);
   el.markDots.forEach((d, i) => d.classList.toggle("on", i === p.markColor));
-  const shown = effectiveTheme();
-  el.swatches.forEach((s, i) => s.classList.toggle("on", i === shown));
+  const theme = effectiveTheme();
+  el.swatches.forEach((s, i) => s.classList.toggle("on", i === theme));
   selectTab(Math.min(el.tabs.length - 1, p.menuTab));
 }
 
@@ -946,10 +1090,16 @@ async function showThumb(page) {
   el.thumb.style.left = clamp(r.left - rr.left + frac * r.width - 85, 8, rr.width - 178) + "px";
   el.thumb.style.bottom = rr.bottom - r.top + 14 + "px";
   el.thumb.classList.add("show");
+  // Dragging the slider passes over many pages; only the one it rests on is worth drawing.
+  clearTimeout(thumbTimer);
+  await new Promise((ok) => (thumbTimer = setTimeout(ok, 70)));
+  if (seq !== thumbSeq || !book || !doc) return;
   let node;
   if (book.kind === "pdf") {
-    const job = doc.draw(page, 340, cropFor(page));
+    if (thumbJob) thumbJob.cancel();
+    const job = (thumbJob = doc.draw(page, 340, cropFor(page)));
     node = await job.done.catch(() => null);
+    if (thumbJob === job) thumbJob = null;
     if (node) node.className = "ink";
   } else {
     node = doc.element(page, 170);
@@ -961,23 +1111,31 @@ async function showThumb(page) {
 
 // ---------------------------------------------------------------- bookmarks, notes, highlights
 
+/** The pages on screen now: one, or the two of a spread. */
+function shownPages() {
+  const first = firstPage(screen);
+  return pagesOn(screen) === 2 ? [first, first + 1] : [first];
+}
+
 function toggleBookmark() {
   if (!ready) return;
-  const i = book.bookmarks.indexOf(book.page);
-  if (i >= 0) book.bookmarks.splice(i, 1);
+  // In a spread the star speaks for both pages: either one's bookmark lights it, and is taken off by it.
+  const shown = shownPages(), had = shown.filter((p) => book.bookmarks.includes(p));
+  if (had.length) book.bookmarks = book.bookmarks.filter((p) => !had.includes(p));
   else {
-    book.bookmarks.push(book.page);
+    book.bookmarks.push(shown[0]);
     book.bookmarks.sort((a, b) => a - b);
   }
   store.save();
-  toast(i >= 0 ? "Bookmark removed" : "Page " + (book.page + 1) + " bookmarked");
+  toast(had.length ? "Bookmark removed" : "Page " + (shown[0] + 1) + " bookmarked");
   redrawMarks();
   refreshMenu();
 }
 
 async function noteDialog() {
   if (!ready) return;
-  const page = book.page;
+  // In a spread, the page that already has a note is the one being edited.
+  const shown = shownPages(), page = shown.find((p) => book.notes[p]) ?? shown[0];
   const text = await ask("Note for page " + (page + 1), book.notes[page] || "", "Save", { multiline: true, hint: "Leave it empty to delete the note" });
   if (text === null) return;
   if (text) book.notes[page] = text;
@@ -1137,9 +1295,18 @@ async function changeTextSize(step) {
   if (!ready || book.kind === "pdf") return;
   const i = TEXT_SIZES.indexOf(book.textSize), to = TEXT_SIZES[clamp((i < 0 ? 5 : i) + step, 0, TEXT_SIZES.length - 1)];
   if (to === book.textSize) return;
+  const b = book, marks = Object.keys(b.highlights).length;
+  if (marks) {
+    // Highlights mark an area of a page; a new text size makes new pages, and they cannot follow.
+    const ok = await confirm("Change the text size?",
+      `This book has highlights on ${marks} ${marks === 1 ? "page" : "pages"}. A new text size lays the book out again, and they will be removed. Bookmarks and notes are kept.`,
+      "Change and remove them", true);
+    if (!ok || book !== b || !ready) return;
+  }
   ready = false;
   el.loading.classList.add("show");
   const pages = await doc.layout(to);
+  if (book !== b) return;
   book.textSize = to;
   remapPages(pages);
   store.save();
@@ -1235,6 +1402,8 @@ function setSleep(min) {
       setAuto(0);
       showMenu(false);
       el.sleep.classList.add("show");
+      // The reader has probably dozed off: the screen is allowed to switch itself off again.
+      if (window.desktop) window.desktop.keepAwake(false);
     }, min * 60000);
   }
   refreshMenu();

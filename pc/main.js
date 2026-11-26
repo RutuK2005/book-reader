@@ -1,6 +1,6 @@
 // The desktop shell. Everything the reader does lives in app/ as an ordinary web page; this file
 // only gives it a window, a stable address to keep its library under, and the files it is opened with.
-const { app, BrowserWindow, Menu, ipcMain, net, protocol, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, net, protocol, screen, session, shell } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
@@ -30,18 +30,31 @@ function stateFile() {
 }
 
 function readBounds() {
+  let saved;
   try {
-    return JSON.parse(fs.readFileSync(stateFile(), "utf8"));
+    saved = JSON.parse(fs.readFileSync(stateFile(), "utf8"));
   } catch (e) {
     return {};
   }
+  if (!saved || typeof saved !== "object") return {};
+  // A window last used on a monitor that is no longer there would open out of sight: its place
+  // is only kept if a good part of it is on a screen that exists now.
+  const { x, y, width, height } = saved;
+  if (![x, y, width, height].every(Number.isFinite)) return { maximized: !!saved.maximized };
+  const visible = screen.getAllDisplays().some((d) => {
+    const a = d.workArea;
+    const w = Math.min(x + width, a.x + a.width) - Math.max(x, a.x), h = Math.min(y + 60, a.y + a.height) - Math.max(y, a.y);
+    return w >= 200 && h >= 40;
+  });
+  if (!visible) return { width, height, maximized: !!saved.maximized };
+  return saved;
 }
 
 function createWindow() {
   const saved = readBounds();
   win = new BrowserWindow({
-    width: saved.width || 1180,
-    height: saved.height || 820,
+    width: Math.max(420, saved.width || 1180),
+    height: Math.max(480, saved.height || 820),
     x: saved.x,
     y: saved.y,
     minWidth: 420,

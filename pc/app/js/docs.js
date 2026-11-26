@@ -18,6 +18,11 @@ export async function sniff(blob) {
   const text = String.fromCharCode(...head);
   if (text.includes("%PDF-")) return "pdf";
   if (head[0] === 0x50 && head[1] === 0x4b) return "epub";
+  // Text has no zero bytes and next to no control characters; a picture, a video or a program does.
+  let odd = 0;
+  for (const b of head) if (b === 0 || (b < 32 && b !== 9 && b !== 10 && b !== 13 && b !== 12 && b !== 27)) odd++;
+  const utf16 = (head[0] === 0xff && head[1] === 0xfe) || (head[0] === 0xfe && head[1] === 0xff);
+  if (!utf16 && odd > head.length / 20) return "other";
   return "txt";
 }
 
@@ -201,6 +206,7 @@ async function parseEpub(blob) {
     return new TextDecoder().decode(await entry.read());
   };
   const xml = (s) => new DOMParser().parseFromString(s, "application/xml");
+  if (!files.has("META-INF/container.xml")) throw new Error("That file isn't a book MyBookSpace can read. It opens PDF, EPUB and text files.");
   const container = xml(await text("META-INF/container.xml"));
   const rootfile = container.getElementsByTagNameNS("*", "rootfile")[0];
   if (!rootfile) throw new Error("That file isn't a readable EPUB");
@@ -258,7 +264,7 @@ async function parseEpub(blob) {
     for (const el of Array.from(body.querySelectorAll("*"))) {
       for (const a of Array.from(el.attributes)) {
         const n = a.name.toLowerCase();
-        if (n.startsWith("on") || n === "style" || n === "href" || n === "id" || n === "width" || n === "height") el.removeAttribute(a.name);
+        if (n.startsWith("on") || n === "style" || n === "href" || n === "id" || n === "width" || n === "height" || n === "srcset" || n === "sizes") el.removeAttribute(a.name);
       }
     }
     for (const img of Array.from(body.querySelectorAll("img"))) {
@@ -279,13 +285,14 @@ async function parseEpub(blob) {
     // If the first page has no picture of its own, the cover goes in front.
     if (cover && !/<img\b/i.test(chapters[0])) chapters.unshift(`<div class="cover-page"><img src="${cover}"></div>`);
   }
-  return { title, chapters, cover };
+  return { title, chapters, cover, urls: [...urls.values()] };
 }
 
 async function parseText(blob) {
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  let text = new TextDecoder("utf-8").decode(bytes);
-  if ((text.match(/�/g) || []).length > text.length / 200) text = new TextDecoder("windows-1252").decode(bytes);
+  const utf16 = bytes[0] === 0xff && bytes[1] === 0xfe ? "utf-16le" : bytes[0] === 0xfe && bytes[1] === 0xff ? "utf-16be" : null;
+  let text = new TextDecoder(utf16 || "utf-8").decode(bytes);
+  if (!utf16 && (text.match(/�/g) || []).length > text.length / 200) text = new TextDecoder("windows-1252").decode(bytes);
   text = text.replace(/\r\n?/g, "\n");
   const paras = (/\n\s*\n/.test(text) ? text.split(/\n\s*\n+/) : text.split("\n")).map((p) => p.replace(/\s*\n\s*/g, " ").trim()).filter(Boolean);
   if (!paras.length) throw new Error("That text file is empty");
@@ -313,6 +320,8 @@ class TextBook {
     this.title = parsed.title;
     this.chapters = parsed.chapters;
     this.coverUrl = parsed.cover;
+    /** Addresses made for the book's pictures; they hold the pictures in memory until given back. */
+    this.urls = parsed.urls || [];
     this.textSize = DEFAULT_TEXT_SIZE;
     this.counts = [];
     this.starts = [];
@@ -396,6 +405,8 @@ class TextBook {
 
   close() {
     this.templates.clear();
+    for (const u of this.urls) URL.revokeObjectURL(u);
+    this.urls = [];
   }
 }
 
@@ -407,5 +418,6 @@ export async function openText(blob, kind, size) {
 }
 
 export async function openBook(blob, kind, textSize) {
+  if (kind === "other") throw new Error("That file isn't a book MyBookSpace can read. It opens PDF, EPUB and text files.");
   return kind === "pdf" ? openPdf(blob) : openText(blob, kind, textSize);
 }
