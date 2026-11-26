@@ -1004,7 +1004,16 @@ public class LibraryActivity extends Activity {
                 if (r[1] > 0) message += ", " + r[1] + " already here brought up to date";
                 if (r[2] > 0) message += ", " + r[2] + " couldn't be read";
             } catch (Throwable t) {
-                message = t.getMessage() == null || t instanceof OutOfMemoryError ? "That file couldn't be read" : t.getMessage();
+                // Said in a dialog: a toast cuts a long message short and is gone before it is read.
+                final String why = t.getMessage() == null || t instanceof OutOfMemoryError ? "That file couldn't be read" : t.getMessage();
+                runOnUiThread(() -> {
+                    working = null;
+                    if (isFinishing()) return;
+                    covers.clear();
+                    build();
+                    new AlertDialog.Builder(this).setTitle("Nothing was brought in").setMessage(why).setPositiveButton("OK", null).show();
+                });
+                return;
             }
             workDone(message);
         }).start();
