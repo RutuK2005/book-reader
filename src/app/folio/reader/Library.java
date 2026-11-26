@@ -31,6 +31,9 @@ import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 /**
  * The bookshelf. Imported PDFs are copied into app-private storage, so a book keeps working even
@@ -392,6 +395,368 @@ final class Library {
         } finally {
             tmp.delete();
         }
+    }
+
+    // ---------------------------------------------------------------- moving the library
+
+    /*
+     * A library file is a zip the PC and Android versions both read and write. manifest.json comes
+     * first and lists the books with their place, bookmarks, notes and highlights; then each
+     * book's original file (the PDF, or the EPUB or text file it was laid out from) and its cover.
+     */
+    static final String TRANSFER_FORMAT = "mybookspace-library";
+    static final String TRANSFER_NAME = "manifest.json";
+
+    interface Progress {
+        void at(int done, int total);
+    }
+
+    private static String kindOf(Book b) {
+        return !b.converted ? "pdf" : b.src.toLowerCase(Locale.US).endsWith(".txt") ? "txt" : "epub";
+    }
+
+    private JSONObject manifestOf(Book b) throws Exception {
+        JSONObject o = new JSONObject();
+        String kind = kindOf(b);
+        o.put("id", b.id).put("title", b.title).put("src", b.src).put("shelf", b.shelf).put("kind", kind);
+        o.put("file", "books/" + b.id + "." + kind);
+        if (cover(b).exists()) o.put("cover", "covers/" + b.id + ".jpg");
+        o.put("ownCover", b.ownCover);
+        o.put("pages", b.pages).put("page", b.page);
+        o.put("opened", b.opened).put("added", b.added).put("size", b.size);
+        o.put("bookmarks", new JSONArray(b.bookmarks));
+        JSONObject notes = new JSONObject();
+        for (Map.Entry<Integer, String> e : b.notes.entrySet()) notes.put(String.valueOf(e.getKey()), e.getValue());
+        o.put("notes", notes);
+        JSONObject hl = new JSONObject();
+        for (Map.Entry<Integer, ArrayList<float[]>> e : b.highlights.entrySet()) {
+            JSONArray list = new JSONArray();
+            for (float[] r : e.getValue()) list.put(toJson(r));
+            hl.put(String.valueOf(e.getKey()), list);
+        }
+        o.put("highlights", hl);
+        o.put("secPerPage", b.secPerPage).put("samples", b.samples);
+        o.put("readSec", b.readSec).put("celebrated", b.celebrated);
+        o.put("textSize", b.textSize);
+        o.put("partner", b.partner).put("hidden", b.hidden);
+        return o;
+    }
+
+    private static void copy(InputStream in, OutputStream out) throws IOException {
+        byte[] buf = new byte[1 << 16];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+    }
+
+    private static void zipFile(ZipOutputStream zip, String name, File f) throws IOException {
+        zip.putNextEntry(new ZipEntry(name));
+        try (InputStream in = new FileInputStream(f)) {
+            copy(in, zip);
+        }
+        zip.closeEntry();
+    }
+
+    /**
+     * Writes the chosen books, with everything the reader has done in them, into one file.
+     * A book's second version goes along with it. Slow: call off the UI thread. Returns how
+     * many books were written.
+     */
+    int exportTo(Uri uri, java.util.Collection<Book> chosen, int goalMin, Progress progress) throws Exception {
+        ArrayList<Book> out = new ArrayList<>();
+        JSONObject root = new JSONObject();
+        synchronized (this) {
+            for (Book b : books) {
+                boolean take = chosen.contains(b);
+                for (Book c : chosen) take |= c.partner.equals(b.id);
+                if (take && (b.converted ? source(b) : file(b)).exists()) out.add(b);
+            }
+            JSONArray arr = new JSONArray();
+            for (Book b : out) arr.put(manifestOf(b));
+            root.put("format", TRANSFER_FORMAT).put("version", 1).put("app", "android");
+            root.put("exportedAt", System.currentTimeMillis());
+            root.put("books", arr);
+            root.put("shelves", new JSONArray(shelves));
+            root.put("daily", new JSONObject(daily));
+            root.put("goalMin", goalMin);
+        }
+        try (OutputStream os = ctx.getContentResolver().openOutputStream(uri, "w")) {
+            if (os == null) throw new IOException("Can't write to that place");
+            try (ZipOutputStream zip = new ZipOutputStream(new java.io.BufferedOutputStream(os, 1 << 16))) {
+                // Books are already compressed; squeezing them again only costs time on a slow tablet.
+                zip.setLevel(java.util.zip.Deflater.NO_COMPRESSION);
+                zip.putNextEntry(new ZipEntry(TRANSFER_NAME));
+                zip.write(root.toString().getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+                int done = 0;
+                for (Book b : out) {
+                    zipFile(zip, "books/" + b.id + "." + kindOf(b), b.converted ? source(b) : file(b));
+                    if (cover(b).exists()) zipFile(zip, "covers/" + b.id + ".jpg", cover(b));
+                    if (progress != null) progress.at(++done, out.size());
+                }
+            }
+        }
+        return out.size();
+    }
+
+    private static Book fromManifest(JSONObject o, boolean sameApp) {
+        Book b = new Book();
+        b.id = o.optString("id");
+        b.title = o.optString("title", "Untitled");
+        b.src = o.optString("src", "");
+        b.shelf = clean(o.optString("shelf", ""));
+        b.pages = o.optInt("pages");
+        b.page = Math.max(0, o.optInt("page"));
+        b.opened = o.optLong("opened");
+        b.added = o.optLong("added", System.currentTimeMillis());
+        b.size = o.optLong("size");
+        b.ownCover = o.optBoolean("ownCover");
+        readMarks(o, b);
+        b.secPerPage = (float) o.optDouble("secPerPage", 0);
+        b.samples = o.optInt("samples");
+        b.readSec = o.optLong("readSec");
+        b.celebrated = o.optBoolean("celebrated");
+        b.partner = o.optString("partner", "");
+        b.hidden = o.optBoolean("hidden");
+        // Text sizes mean different things on a PC and on Android, so only its own are kept.
+        b.textSize = sameApp ? (float) o.optDouble("textSize", Convert.DEFAULT_SIZE) : Convert.DEFAULT_SIZE;
+        if (b.textSize <= 0) b.textSize = Convert.DEFAULT_SIZE;
+        return b;
+    }
+
+    private static void readMarks(JSONObject o, Book b) {
+        b.bookmarks.clear();
+        b.notes.clear();
+        b.highlights.clear();
+        JSONArray bm = o.optJSONArray("bookmarks");
+        if (bm != null) for (int k = 0; k < bm.length(); k++) if (!b.bookmarks.contains(bm.optInt(k))) b.bookmarks.add(bm.optInt(k));
+        Collections.sort(b.bookmarks);
+        JSONObject notes = o.optJSONObject("notes");
+        if (notes != null) {
+            for (Iterator<String> it = notes.keys(); it.hasNext(); ) {
+                String k = it.next();
+                try {
+                    b.notes.put(Integer.parseInt(k), notes.optString(k));
+                } catch (NumberFormatException ignored) {
+                    // A note with no page to hang on is dropped.
+                }
+            }
+        }
+        JSONObject hl = o.optJSONObject("highlights");
+        if (hl != null) {
+            for (Iterator<String> it = hl.keys(); it.hasNext(); ) {
+                String k = it.next();
+                JSONArray list = hl.optJSONArray(k);
+                if (list == null) continue;
+                ArrayList<float[]> rects = new ArrayList<>();
+                for (int i = 0; i < list.length(); i++) {
+                    float[] r = fromJson(list.optJSONArray(i));
+                    if (r != null) rects.add(r);
+                }
+                try {
+                    if (!rects.isEmpty()) b.highlights.put(Integer.parseInt(k), rects);
+                } catch (NumberFormatException ignored) {
+                    // As for notes.
+                }
+            }
+        }
+    }
+
+    /**
+     * A book laid out from an EPUB or text file has a different number of pages on each device,
+     * so everything tied to a page moves to the same point in the book. Highlights mark an area
+     * of a page and cannot be carried over.
+     */
+    private static void fitPages(Book b, int pages) {
+        int old = b.pages;
+        if (old > 0 && old != pages) {
+            float k = pages / (float) old;
+            b.page = Math.round(b.page * k);
+            ArrayList<Integer> marks = new ArrayList<>();
+            for (int p : b.bookmarks) {
+                int q = Math.min(pages - 1, Math.round(p * k));
+                if (!marks.contains(q)) marks.add(q);
+            }
+            b.bookmarks.clear();
+            b.bookmarks.addAll(marks);
+            TreeMap<Integer, String> notes = new TreeMap<>();
+            for (Map.Entry<Integer, String> e : b.notes.entrySet()) {
+                int q = Math.min(pages - 1, Math.round(e.getKey() * k));
+                String had = notes.get(q);
+                notes.put(q, had == null ? e.getValue() : had + "\n" + e.getValue());
+            }
+            b.notes.clear();
+            b.notes.putAll(notes);
+            b.highlights.clear();
+            b.secPerPage = 0;
+            b.samples = 0;
+        }
+        b.pages = pages;
+        b.page = Math.max(0, Math.min(pages - 1, b.page));
+    }
+
+    /** A book that is already here takes the newer of the two reading positions and keeps both sets of notes. */
+    private static void mergeInto(Book have, JSONObject o) {
+        Book from = fromManifest(o, false);
+        if (have.pages > 0) fitPages(from, have.pages);
+        if (from.opened > have.opened) {
+            have.page = from.page;
+            have.opened = from.opened;
+            if (from.samples > 0) {
+                have.secPerPage = from.secPerPage;
+                have.samples = from.samples;
+            }
+            if (!from.highlights.isEmpty()) {
+                have.highlights.clear();
+                have.highlights.putAll(from.highlights);
+            }
+        }
+        for (int p : from.bookmarks) if (!have.bookmarks.contains(p)) have.bookmarks.add(p);
+        Collections.sort(have.bookmarks);
+        for (Map.Entry<Integer, String> e : from.notes.entrySet()) {
+            String had = have.notes.get(e.getKey());
+            if (had == null) have.notes.put(e.getKey(), e.getValue());
+            else if (!had.contains(e.getValue())) have.notes.put(e.getKey(), had + "\n" + e.getValue());
+        }
+        have.readSec = Math.max(have.readSec, from.readSec);
+        have.celebrated |= from.celebrated;
+        if (have.shelf.isEmpty()) have.shelf = from.shelf;
+    }
+
+    /**
+     * Adds the books of a library file to this library, with their places, bookmarks, notes,
+     * highlights, covers and shelves. Books already here are not copied again; they are brought
+     * up to date instead. Slow: call off the UI thread. Returns {added, updated, failed}.
+     */
+    int[] importFrom(Uri uri, Progress progress) throws Exception {
+        HashMap<String, Book> byFile = new HashMap<>(), byCover = new HashMap<>();
+        HashMap<String, String> ids = new HashMap<>();
+        ArrayList<Book> order = new ArrayList<>(), fresh = new ArrayList<>(), covered = new ArrayList<>();
+        ArrayList<Object[]> merges = new ArrayList<>();
+        JSONObject root;
+        int failed = 0;
+        boolean done = false;
+        try (InputStream in = ctx.getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new IOException("Can't read that file");
+            ZipInputStream zip = new ZipInputStream(new java.io.BufferedInputStream(in, 1 << 16));
+            ZipEntry e = zip.getNextEntry();
+            if (e == null || !TRANSFER_NAME.equals(e.getName())) throw new IOException("That file isn't a MyBookSpace library");
+            java.io.ByteArrayOutputStream text = new java.io.ByteArrayOutputStream();
+            copy(zip, text);
+            root = new JSONObject(new String(text.toByteArray(), StandardCharsets.UTF_8));
+            if (!TRANSFER_FORMAT.equals(root.optString("format"))) throw new IOException("That file isn't a MyBookSpace library");
+            if (root.optInt("version", 1) > 1) throw new IOException("That library file was made by a newer MyBookSpace. Update this app first.");
+            boolean sameApp = "android".equals(root.optString("app"));
+            JSONArray arr = root.optJSONArray("books");
+            if (arr == null) arr = new JSONArray();
+            synchronized (this) {
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject o = arr.getJSONObject(i);
+                    Book have = findBySource(o.optString("src"), o.optLong("size"));
+                    if (have != null) {
+                        ids.put(o.optString("id"), have.id);
+                        merges.add(new Object[]{have, o});
+                        continue;
+                    }
+                    Book b = fromManifest(o, sameApp);
+                    String id = b.id;
+                    while (id.isEmpty() || find(id) != null || ids.containsValue(id)) {
+                        id = Long.toString(System.currentTimeMillis(), 36) + Integer.toString((int) (Math.random() * 46656), 36);
+                    }
+                    ids.put(b.id, id);
+                    b.id = id;
+                    order.add(b);
+                    byFile.put(o.optString("file"), b);
+                    if (o.has("cover")) byCover.put(o.optString("cover"), b);
+                }
+            }
+            while ((e = zip.getNextEntry()) != null) {
+                Book b = byFile.get(e.getName());
+                if (b != null) {
+                    try {
+                        File f = file(b);
+                        try (OutputStream out = new FileOutputStream(f)) {
+                            copy(zip, out);
+                        }
+                        if (!Convert.isPdf(f)) {
+                            // Not a PDF: keep the original and lay it out into pages.
+                            File src = source(b);
+                            if (!f.renameTo(src)) throw new IOException("Couldn't store that file");
+                            b.converted = true;
+                            b.cropDone = true;
+                            Convert.toPdf(src, b.src, f, b.textSize);
+                        }
+                        try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
+                             PdfRenderer r = new PdfRenderer(pfd)) {
+                            if (r.getPageCount() < 1) throw new IOException("That PDF has no pages");
+                            fitPages(b, r.getPageCount());
+                            if (!covered.contains(b)) drawCover(b, r);
+                        }
+                        fresh.add(b);
+                    } catch (Exception | OutOfMemoryError one) {
+                        // One unreadable book is left out; the rest of the library still comes over.
+                        failed++;
+                        file(b).delete();
+                        source(b).delete();
+                        cover(b).delete();
+                    }
+                    if (progress != null) progress.at(fresh.size() + failed, order.size());
+                } else if ((b = byCover.get(e.getName())) != null) {
+                    try (OutputStream out = new FileOutputStream(cover(b))) {
+                        copy(zip, out);
+                    }
+                    covered.add(b);
+                }
+            }
+            synchronized (this) {
+                // New books go to the front, in the order they had on the other device.
+                ArrayList<Book> add = new ArrayList<>();
+                for (Book b : order) if (fresh.contains(b)) add.add(b);
+                books.addAll(0, add);
+                for (Object[] m : merges) mergeInto((Book) m[0], (JSONObject) m[1]);
+                for (Book b : add) {
+                    // A second version stays tucked under its book only if it came over in this file too.
+                    String partner = b.partner.isEmpty() ? null : ids.get(b.partner);
+                    Book other = partner == null || partner.equals(b.id) ? null : find(partner);
+                    b.partner = other != null && add.contains(other) ? partner : "";
+                }
+                for (Book b : add) {
+                    if (!covered.contains(b)) b.ownCover = false;
+                    boolean owned = false;
+                    for (Book o : books) owned |= o.partner.equals(b.id);
+                    if (b.hidden && !owned) b.hidden = false;
+                }
+                JSONArray sh = root.optJSONArray("shelves");
+                if (sh != null) {
+                    for (int i = 0; i < sh.length(); i++) {
+                        String n = clean(sh.optString(i));
+                        boolean used = false;
+                        for (Book b : books) used |= n.equals(b.shelf);
+                        if (!n.isEmpty() && used && !shelves.contains(n)) shelves.add(n);
+                    }
+                }
+                for (Book b : books) if (!b.shelf.isEmpty() && !shelves.contains(b.shelf)) shelves.add(b.shelf);
+                // The reading log keeps the larger figure for each day, so importing twice adds nothing.
+                JSONObject d = root.optJSONObject("daily");
+                if (d != null) {
+                    for (Iterator<String> it = d.keys(); it.hasNext(); ) {
+                        String k = it.next();
+                        Integer have = daily.get(k);
+                        daily.put(k, Math.max(have == null ? 0 : have, d.optInt(k)));
+                    }
+                }
+                save();
+            }
+            done = true;
+        } finally {
+            if (!done) {
+                for (Book b : order) {
+                    file(b).delete();
+                    source(b).delete();
+                    cover(b).delete();
+                }
+            }
+        }
+        return new int[]{fresh.size(), merges.size(), failed};
     }
 
     // ---------------------------------------------------------------- covers

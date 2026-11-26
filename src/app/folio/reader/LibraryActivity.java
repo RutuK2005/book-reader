@@ -46,8 +46,8 @@ import java.util.Locale;
  */
 public class LibraryActivity extends Activity {
 
-    private static final int REQ_PICK = 1, REQ_COVER = 2;
-    private static final String STATE_COVER = "cover_book";
+    private static final int REQ_PICK = 1, REQ_COVER = 2, REQ_EXPORT = 3, REQ_IMPORT = 4;
+    private static final String STATE_COVER = "cover_book", STATE_EXPORT = "export_books";
     private static final int DEFAULT_ACCENT = 0xFFB5651D;
     /** The accent of the colour scheme in use; set each time the page is built. */
     private static int ACCENT = DEFAULT_ACCENT;
@@ -84,8 +84,14 @@ public class LibraryActivity extends Activity {
     private int bg, fg, dim, card, lift;
     private float dp;
     private boolean importing;
+    /** True on a phone-width screen, where the wide rows are trimmed to fit. */
+    private boolean narrow;
     /** Id of the book a cover picture is being picked for, or null. */
     private String coverFor;
+    /** Ids of the books chosen for a library file, while the reader picks where to save it. */
+    private ArrayList<String> exportIds;
+    /** What the long job in hand is doing, shown at the bottom of the page; null when idle. */
+    private String working;
     private String filter = ALL;
     private ScrollView scroll;
     private LinearLayout listBox;
@@ -119,7 +125,10 @@ public class LibraryActivity extends Activity {
         prefs = P.get(this);
         dp = getResources().getDisplayMetrics().density;
         filter = prefs.getString(P.SHELF, ALL);
-        if (state != null) coverFor = state.getString(STATE_COVER);
+        if (state != null) {
+            coverFor = state.getString(STATE_COVER);
+            exportIds = state.getStringArrayList(STATE_EXPORT);
+        }
     }
 
     @Override
@@ -127,6 +136,7 @@ public class LibraryActivity extends Activity {
         super.onSaveInstanceState(out);
         // The picker can push this page out of memory; the book being covered has to survive that.
         out.putString(STATE_COVER, coverFor);
+        out.putStringArrayList(STATE_EXPORT, exportIds);
     }
 
     @Override
@@ -142,6 +152,9 @@ public class LibraryActivity extends Activity {
     @SuppressWarnings("deprecation")
     private void build() {
         int theme = P.theme(prefs);
+        // Large text needs room too, so the width is counted in text-sized units.
+        android.content.res.Configuration cfg = getResources().getConfiguration();
+        narrow = cfg.screenWidthDp / Math.max(1f, cfg.fontScale) < 440;
         // A lightly tinted page with paper-white cards raised off it; in the dark themes the
         // cards are simply a lighter grey, since shadows do not show on black.
         int paper = theme == 5 ? 0xFF121212 : Themes.BG[theme];
@@ -176,7 +189,7 @@ public class LibraryActivity extends Activity {
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(d(24), d(18), d(24), d(40));
+        page.setPadding(d(narrow ? 16 : 24), d(18), d(narrow ? 16 : 24), d(40));
 
         page.addView(header());
         final boolean open = prefs.getBoolean(P.HOME_OPEN, false);
@@ -189,6 +202,7 @@ public class LibraryActivity extends Activity {
         }
         if (open && current != null) page.addView(continueCard(current), top(MATCH, WRAP, 14));
         if (open) page.addView(coloursRow(), top(MATCH, WRAP, 14));
+        if (open) page.addView(transferRow(), top(MATCH, WRAP, 14));
 
         if (all.isEmpty()) {
             page.addView(message("Your library is empty.\n\nTap “Add books” and choose the books you want to read (PDF, EPUB or TXT). "
@@ -223,10 +237,10 @@ public class LibraryActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.addView(scroll, new FrameLayout.LayoutParams(MATCH, MATCH));
 
-        busy = text("Adding books…", 15, Color.WHITE, false);
+        busy = text(working != null ? working : "Adding books…", 15, Color.WHITE, false);
         busy.setPadding(d(22), d(12), d(22), d(12));
         busy.setBackground(round(0xE0202020, 24));
-        busy.setVisibility(importing ? View.VISIBLE : View.GONE);
+        busy.setVisibility(importing || working != null ? View.VISIBLE : View.GONE);
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         blp.bottomMargin = d(36);
         root.addView(busy, blp);
@@ -323,8 +337,10 @@ public class LibraryActivity extends Activity {
         date.setAllCaps(true);
         date.setLetterSpacing(0.08f);
         titles.addView(date);
-        titles.addView(text("MyBookSpace", 30, fg, true));
-        TextView by = text("by Rutuparn K   ·   github.com/RutuK2005", 12, dim, false);
+        TextView appName = text("MyBookSpace", narrow ? 25 : 30, fg, true);
+        appName.setSingleLine(true);
+        titles.addView(appName);
+        TextView by = text(narrow ? "by Rutuparn K · github.com/RutuK2005" : "by Rutuparn K   ·   github.com/RutuK2005", 12, dim, false);
         by.setOnClickListener(v -> {
             try {
                 startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/RutuK2005")));
@@ -334,8 +350,8 @@ public class LibraryActivity extends Activity {
         });
         titles.addView(by);
         head.addView(titles, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        TextView add = text("+  Add books", 15, Color.WHITE, false);
-        add.setPadding(d(20), d(11), d(20), d(11));
+        TextView add = text(narrow ? "+  Add" : "+  Add books", 15, Color.WHITE, false);
+        add.setPadding(d(narrow ? 15 : 20), d(11), d(narrow ? 15 : 20), d(11));
         add.setBackground(press(round(ACCENT, 24)));
         add.setOnClickListener(v -> pick());
         head.addView(add);
@@ -352,8 +368,9 @@ public class LibraryActivity extends Activity {
         int streak = lib.streak();
         TextView t = text("Today  " + minutes(lib.secondsOn(0)) + "   ·   " + streak + (streak == 1 ? " day" : " days") + " streak", 14, fg, false);
         t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
         row.addView(t, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        row.addView(text(open ? "Hide  ▴" : "Goal and current book  ▾", 13, ACCENT, false));
+        row.addView(text(open ? "Hide  ▴" : narrow ? "More  ▾" : "Goal and current book  ▾", 13, ACCENT, false));
         row.setOnClickListener(v -> {
             prefs.edit().putBoolean(P.HOME_OPEN, !open).apply();
             build();
@@ -372,7 +389,7 @@ public class LibraryActivity extends Activity {
         c.setElevation(lift);
         Ring ring = new Ring(this);
         ring.set(Math.min(1f, today / (goal * 60f)), today / 60, fg, Themes.blend(card, fg, 0.14f));
-        c.addView(ring, new LinearLayout.LayoutParams(d(74), d(74)));
+        c.addView(ring, new LinearLayout.LayoutParams(d(narrow ? 58 : 74), d(narrow ? 58 : 74)));
         c.addView(stat(minutes(today), today >= goal * 60 ? "Goal reached" : "of " + goal + " min today"), statParams());
         c.addView(stat(streak + (streak == 1 ? " day" : " days"), "Streak"), statParams());
         c.addView(stat(minutes(lib.weekSeconds()), "This week"), statParams());
@@ -382,15 +399,16 @@ public class LibraryActivity extends Activity {
 
     private LinearLayout.LayoutParams statParams() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
-        lp.leftMargin = d(16);
+        lp.leftMargin = d(narrow ? 10 : 16);
         return lp;
     }
 
     private View stat(String value, String label) {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        TextView v = text(value, 17, fg, true);
+        TextView v = text(value, narrow ? 14 : 17, fg, true);
         v.setSingleLine(true);
+        v.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(v);
         TextView l = text(label, 11, dim, false);
         l.setMaxLines(2);
@@ -556,7 +574,7 @@ public class LibraryActivity extends Activity {
     /** Lays the books out as rows of covers; the column count follows the screen width. */
     private void grid(LinearLayout page, ArrayList<Library.Book> books) {
         int gap = d(20);
-        int width = getResources().getDisplayMetrics().widthPixels - d(48);
+        int width = getResources().getDisplayMetrics().widthPixels - d(narrow ? 32 : 48);
         int cols = Math.max(2, (width + gap) / (d(150) + gap));
         for (int i = 0; i < books.size(); i += cols) {
             LinearLayout row = new LinearLayout(this);
@@ -773,6 +791,16 @@ public class LibraryActivity extends Activity {
             if (result == RESULT_OK && data != null && data.getData() != null && b != null) applyCover(b, data.getData());
             return;
         }
+        if (req == REQ_EXPORT) {
+            ArrayList<String> ids = exportIds;
+            exportIds = null;
+            if (result == RESULT_OK && data != null && data.getData() != null && ids != null) runExport(data.getData(), ids);
+            return;
+        }
+        if (req == REQ_IMPORT) {
+            if (result == RESULT_OK && data != null && data.getData() != null) runImport(data.getData());
+            return;
+        }
         if (req != REQ_PICK || result != RESULT_OK || data == null) return;
         final ArrayList<Uri> uris = new ArrayList<>();
         ClipData clip = data.getClipData();
@@ -822,6 +850,164 @@ public class LibraryActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    // ---------------------------------------------------------------- moving the library
+
+    private View transferRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(d(18), d(12), d(18), d(12));
+        row.setBackground(press(round(card, 18)));
+        row.setElevation(lift);
+        TextView name = text(narrow ? "Move your library" : "Move your library to another device", 14, fg, false);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        row.addView(name, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        row.addView(text("Export / Import", 13, ACCENT, false));
+        row.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Move your library")
+                .setItems(new String[]{"Export books to a file…", "Import a library file…"}, (dlg, which) -> {
+                    if (which == 0) chooseExport();
+                    else pickImport();
+                })
+                .show());
+        return row;
+    }
+
+    /** Asks which shelves to put in the file; everything is ticked to start with. */
+    private void chooseExport() {
+        if (working != null || importing) return;
+        final ArrayList<Library.Book> all = lib.list();
+        if (all.isEmpty()) {
+            Toast.makeText(this, "There are no books to export yet", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final ArrayList<String> groups = new ArrayList<>();
+        for (String s : lib.shelves()) {
+            for (Library.Book b : all) {
+                if (s.equals(b.shelf)) {
+                    groups.add(s);
+                    break;
+                }
+            }
+        }
+        for (Library.Book b : all) {
+            if (b.shelf.isEmpty()) {
+                groups.add("");
+                break;
+            }
+        }
+        final String[] labels = new String[groups.size()];
+        final boolean[] ticked = new boolean[groups.size()];
+        for (int i = 0; i < labels.length; i++) {
+            int n = 0;
+            for (Library.Book b : all) if (b.shelf.equals(groups.get(i))) n++;
+            labels[i] = (groups.get(i).isEmpty() ? "Books not on a shelf" : groups.get(i)) + "   (" + n + ")";
+            ticked[i] = true;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Which books go in the file?")
+                .setMultiChoiceItems(labels, ticked, (dlg, which, on) -> ticked[which] = on)
+                .setPositiveButton("Export", (dlg, which) -> {
+                    ArrayList<String> ids = new ArrayList<>();
+                    for (Library.Book b : all) {
+                        int g = groups.indexOf(b.shelf);
+                        if (g >= 0 && ticked[g]) ids.add(b.id);
+                    }
+                    if (ids.isEmpty()) {
+                        Toast.makeText(this, "Nothing was ticked", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    // The reader chooses the folder and the name; the app never needs storage permission.
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("application/octet-stream");
+                    i.putExtra(Intent.EXTRA_TITLE, "MyBookSpace-library-" + new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date()) + ".mbs");
+                    try {
+                        exportIds = ids;
+                        startActivityForResult(i, REQ_EXPORT);
+                    } catch (Exception e) {
+                        exportIds = null;
+                        Toast.makeText(this, "No file picker is available on this device", Toast.LENGTH_LONG).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void pickImport() {
+        if (working != null || importing) return;
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        // File apps do not know what a .mbs file is, so everything has to be allowed.
+        i.setType("*/*");
+        try {
+            startActivityForResult(i, REQ_IMPORT);
+        } catch (Exception e) {
+            Toast.makeText(this, "No file picker is available on this device", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showWork(final String what) {
+        runOnUiThread(() -> {
+            working = what;
+            if (busy != null) {
+                if (what != null) busy.setText(what);
+                busy.setVisibility(what != null || importing ? View.VISIBLE : View.GONE);
+            }
+        });
+    }
+
+    private void workDone(final String message) {
+        runOnUiThread(() -> {
+            working = null;
+            if (isFinishing()) return;
+            covers.clear();
+            build();
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void runExport(final Uri uri, ArrayList<String> ids) {
+        final ArrayList<Library.Book> chosen = new ArrayList<>();
+        for (String id : ids) {
+            Library.Book b = lib.find(id);
+            if (b != null) chosen.add(b);
+        }
+        final int goal = prefs.getInt(P.GOAL_MIN, 20);
+        showWork("Writing the library file…");
+        new Thread(() -> {
+            String message;
+            try {
+                int n = lib.exportTo(uri, chosen, goal, (done, total) -> showWork("Writing the library file…  " + done + " of " + total));
+                message = n + (n == 1 ? " book" : " books") + " saved to the file. Open it in MyBookSpace on the other device.";
+            } catch (Throwable t) {
+                message = "The file couldn't be written" + (t.getMessage() == null ? "" : ": " + t.getMessage());
+                try {
+                    android.provider.DocumentsContract.deleteDocument(getContentResolver(), uri);
+                } catch (Exception ignored) {
+                    // A half-written file may be left behind; nothing in the library is affected.
+                }
+            }
+            workDone(message);
+        }).start();
+    }
+
+    private void runImport(final Uri uri) {
+        showWork("Reading the library file…");
+        new Thread(() -> {
+            String message;
+            try {
+                int[] r = lib.importFrom(uri, (done, total) -> showWork("Bringing in books…  " + done + " of " + total));
+                message = r[0] + (r[0] == 1 ? " book added" : " books added");
+                if (r[1] > 0) message += ", " + r[1] + " already here brought up to date";
+                if (r[2] > 0) message += ", " + r[2] + " couldn't be read";
+            } catch (Throwable t) {
+                message = t.getMessage() == null || t instanceof OutOfMemoryError ? "That file couldn't be read" : t.getMessage();
+            }
+            workDone(message);
+        }).start();
     }
 
     // ---------------------------------------------------------------- covers
@@ -980,6 +1166,7 @@ public class LibraryActivity extends Activity {
         int scheme = prefs.getInt("home_scheme", 0);
         TextView name = text("Home page colours   ·   " + SCHEME_NAMES[scheme < SCHEME_NAMES.length ? scheme : 0], 14, fg, false);
         name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, WRAP, 1f);
         nlp.leftMargin = d(12);
         row.addView(name, nlp);

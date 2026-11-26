@@ -28,7 +28,7 @@ New-Item -ItemType Directory -Force "$out\classes" | Out-Null
 Step "aapt2 compile" { & "$bt\aapt2.exe" compile --dir "$root\res" -o "$out\res.zip" }
 Step "aapt2 link" {
     & "$bt\aapt2.exe" link -o "$out\unaligned.apk" -I $androidJar --manifest "$root\AndroidManifest.xml" `
-        --min-sdk-version 26 --target-sdk-version 34 --version-code 2 --version-name 1.1 "$out\res.zip"
+        --min-sdk-version 26 --target-sdk-version 34 --version-code 4 --version-name 1.3 "$out\res.zip"
 }
 
 $sources = Get-ChildItem "$root\src" -Recurse -Filter *.java | ForEach-Object { $_.FullName }

@@ -952,8 +952,11 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
                 prefs.edit().putInt(P.THEME, t).apply();
                 applyTheme();
             });
+            // On a phone the swatches sit closer together so the whole row fits.
+            float roomDp = getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density - 40;
+            int gapDp = Math.max(1, Math.min(9, (int) ((roomDp / Themes.COUNT - 46) / 2)));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(d(46), d(46));
-            lp.setMargins(d(9), 0, d(9), 0);
+            lp.setMargins(d(gapDp), 0, d(gapDp), 0);
             themes.addView(sw, lp);
             swatches[i] = sw;
         }
@@ -1025,7 +1028,7 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
         });
         bright.addView(brightSeek, new LinearLayout.LayoutParams(0, WRAP, 1f));
         display.addView(bright, rowParams(14));
-        Switch auto = toggle(mc, "Use the tablet's brightness", saved < 0f);
+        Switch auto = toggle(mc, "Use the device's brightness", saved < 0f);
         auto.setOnCheckedChangeListener((v, on) -> {
             prefs.edit().putFloat(P.BRIGHT, on ? -1f : brightSeek.getProgress() / 100f).apply();
             brightSeek.setEnabled(!on);
@@ -1078,7 +1081,9 @@ public class ReaderActivity extends Activity implements ReaderView.Listener {
             prefs.edit().putBoolean("rotation_lock", on).apply();
             applyRotationLock();
         });
-        for (Switch s : new Switch[]{crop, dual, lock, vol, clock}) layoutTab.addView(s, rowParams(4));
+        // Two pages side by side are too small to read on a phone, so the choice is not offered there.
+        boolean wide = getResources().getConfiguration().smallestScreenWidthDp >= 600;
+        for (Switch s : wide ? new Switch[]{crop, dual, lock, vol, clock} : new Switch[]{crop, lock, vol, clock}) layoutTab.addView(s, rowParams(4));
 
         // ---- Tools
         rulerBtn = pill(mc, v -> {
