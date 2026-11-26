@@ -27,8 +27,17 @@ const kv = (mode) => db.transaction("kv", mode).objectStore("kv");
 const files = (mode) => db.transaction("files", mode).objectStore("files");
 
 export const getFile = (key) => request(files("readonly").get(key));
-const putFile = (key, blob) => request(files("readwrite").put(blob, key));
-const delFile = (key) => request(files("readwrite").delete(key));
+/** A write counts only once it is really on the disk: a full disk fails here, not at the request. */
+function written(run) {
+  return new Promise((ok, fail) => {
+    const tx = db.transaction("files", "readwrite");
+    tx.oncomplete = () => ok();
+    tx.onabort = tx.onerror = () => fail(tx.error || new Error("The library couldn't be written to this computer's disk"));
+    run(tx.objectStore("files"));
+  });
+}
+const putFile = (key, blob) => written((st) => st.put(blob, key));
+const delFile = (key) => written((st) => st.delete(key));
 
 const DEFAULT_PREFS = {
   theme: 1, warmth: 0, bright: -1, anim: 0, crop: true, dual: true, clock: true, sound: true,
@@ -54,12 +63,27 @@ export async function load() {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 }
 
-let saving = Promise.resolve();
+let saving = Promise.resolve(), saveFailed = false;
+/** Called once if the library can no longer be saved (a full disk, usually), so the reader can be told. */
+let onSaveError = null;
+export function whenSaveFails(fn) {
+  onSaveError = fn;
+}
 
 export function save() {
   const snapshot = JSON.parse(JSON.stringify(state));
-  saving = saving.then(() => request(kv("readwrite").put(snapshot, "state"))).catch(() => {
-    // Losing a progress update is better than stopping the reader.
+  saving = saving.then(() => new Promise((ok, fail) => {
+    const tx = db.transaction("kv", "readwrite");
+    tx.oncomplete = () => ok();
+    tx.onabort = tx.onerror = () => fail(tx.error);
+    tx.objectStore("kv").put(snapshot, "state");
+  })).then(() => {
+    saveFailed = false;
+  }).catch((e) => {
+    // Losing a progress update is better than stopping the reader, but not without a word.
+    console.error(e);
+    if (!saveFailed && onSaveError) onSaveError();
+    saveFailed = true;
   });
   return saving;
 }
@@ -75,8 +99,12 @@ export function setPref(key, value) {
 export const list = () => state.books.filter((b) => !b.hidden);
 export const find = (id) => state.books.find((b) => b.id === id) || null;
 export const started = (b) => b.opened > 0 && b.page > 0;
-export const finished = (b) => b.pages > 0 && b.page >= b.pages - 1;
-export const percent = (b) => (b.pages > 0 ? Math.min(100, Math.floor(((b.page + 1) * 100) / b.pages)) : 0);
+/**
+ * Read to the last page. A book that has never been opened is not finished, however short; and
+ * one whose end was reached in a two-page spread counts even if it was left on the page before.
+ */
+export const finished = (b) => b.pages > 0 && b.opened > 0 && (b.page >= b.pages - 1 || (b.celebrated && b.page >= b.pages - 2));
+export const percent = (b) => (b.pages <= 0 ? 0 : finished(b) ? 100 : Math.min(100, Math.floor(((b.page + 1) * 100) / b.pages)));
 export const kindName = (b) => (b.kind === "pdf" ? "PDF" : b.kind === "txt" ? "Text" : "EPUB");
 
 /** A readable title from a file name: no download-site tags, separators turned into spaces. */
@@ -160,13 +188,28 @@ async function firstCover(book, doc) {
   return canvasBlob(titleCover(book.title, kindName(book)));
 }
 
+/** Whether the last importFile found the book already in the library. */
+export const lastImport = { existed: false };
+
 /** Copies a book into the library. `file` is a File, or {name, data} from the desktop shell. */
 export async function importFile(file) {
   const blob = file instanceof Blob ? file : new Blob([file.data]);
   const name = file.name || "Book.pdf";
   const dup = state.books.find((b) => b.size === blob.size && b.src === name);
+  lastImport.existed = !!dup;
   if (dup) return dup;
   const kind = await sniff(blob);
+  if (kind === "other") throw new Error("isn't a book MyBookSpace can read. It opens PDF, EPUB and text files.");
+  if (kind === "epub" && !/\.epub$/i.test(name)) {
+    // Word documents and plain zips start the same way as an EPUB; only a real one is taken in.
+    let real = false;
+    try {
+      real = (await readZip(blob)).has("META-INF/container.xml");
+    } catch (e) {
+      real = false;
+    }
+    if (!real) throw new Error("isn't a book MyBookSpace can read. It opens PDF, EPUB and text files.");
+  }
   const book = {
     id: Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36),
     title: niceTitle(name), src: name, shelf: "", kind, pages: 0, page: 0, opened: 0,
@@ -276,7 +319,7 @@ export function move(book, onto) {
 
 export function addShelf(name) {
   const n = name.trim().replace(/^#+/, "");
-  if (!n || state.shelves.includes(n)) return null;
+  if (!n || state.shelves.some((s) => s.toLowerCase() === n.toLowerCase())) return null;
   state.shelves.push(n);
   save();
   return n;
@@ -284,7 +327,8 @@ export function addShelf(name) {
 
 export function renameShelf(from, to) {
   const n = to.trim().replace(/^#+/, "");
-  if (!n || n === from || state.shelves.includes(n)) return false;
+  if (n === from) return true;
+  if (!n || state.shelves.some((s) => s !== from && s.toLowerCase() === n.toLowerCase())) return false;
   state.shelves[state.shelves.indexOf(from)] = n;
   for (const b of state.books) if (b.shelf === from) b.shelf = n;
   const order = state.prefs.tabOrder, i = order.indexOf(from);
@@ -421,7 +465,8 @@ function fromManifest(o, sameApp) {
 function fitPages(b, pages) {
   const old = b.pages;
   if (old > 0 && old !== pages) {
-    const k = pages / old, at = (p) => Math.min(pages - 1, Math.round(p * k));
+    // The last page stays the last page, so a finished book does not come back unfinished.
+    const k = pages / old, at = (p) => (p >= old - 1 ? pages - 1 : Math.min(pages - 1, Math.round(p * k)));
     b.page = at(b.page);
     b.bookmarks = [...new Set(b.bookmarks.map(at))].sort((x, y) => x - y);
     const notes = {};
@@ -449,7 +494,18 @@ function mergeInto(have, o) {
       have.secPerPage = from.secPerPage;
       have.samples = from.samples;
     }
-    if (Object.keys(from.highlights).length) have.highlights = from.highlights;
+  }
+  // Highlights from both devices are kept, like bookmarks and notes; the same one is not added twice.
+  for (const [p, rects] of Object.entries(from.highlights)) {
+    const list = have.highlights[p] || (have.highlights[p] = []);
+    const seen = new Set(list.map((r) => r.slice(0, 4).map((v) => Number(v).toFixed(4)).join()));
+    for (const r of rects) {
+      const key = r.slice(0, 4).map((v) => Number(v).toFixed(4)).join();
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push(r);
+      }
+    }
   }
   have.bookmarks = [...new Set([...have.bookmarks, ...from.bookmarks])].sort((a, b) => a - b);
   for (const [p, text] of Object.entries(from.notes)) {

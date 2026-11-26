@@ -89,7 +89,9 @@ button.card:hover, .card.continue:hover { filter: brightness(1.03); }
 .empty.big { margin-top: 70px; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 26px 22px; margin-top: 14px; }
-.book { cursor: pointer; }
+.book { cursor: pointer; outline: none; }
+.book:focus-visible .slot { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
+.head .link { white-space: nowrap; }
 .book.lifted { opacity: .45; }
 /* Each cover keeps its own proportions and stands on the bottom of an equal-height slot. */
 .slot { position: relative; height: 232px; display: flex; align-items: flex-end; justify-content: center; border-radius: 9px; }

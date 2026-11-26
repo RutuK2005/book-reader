@@ -1,6 +1,6 @@
 // Home: today's reading at a glance, the book in progress, and the shelves. Shelves are the
 // reader's own categories; "Reading" and "Finished" are worked out from each book's progress.
-import { h, clear, toast, dialog, menu, ask, confirm, pickFiles, minutes, hex, blend } from "./ui.js";
+import { h, clear, toast, dialog, dialogOpen, menu, ask, confirm, pickFiles, minutes, hex, blend } from "./ui.js";
 import * as store from "./store.js";
 import { THEME_BG, THEME_FG, isDark, SCHEMES, SCHEME_NAMES, DEFAULT_ACCENT } from "./themes.js";
 
@@ -14,6 +14,10 @@ let filter = ALL, query = "", searching = false, importing = 0;
 const coverUrls = new Map();
 /** What is being dragged: {book} or {tab}. Kept here because drag data cannot carry objects. */
 let dragging = null;
+/** The day the page was last drawn for. */
+let shownDay = "";
+/** Drag data is only a label; a type of its own keeps a drop from typing it into the search box. */
+const DRAG_TYPE = "application/x-mybookspace";
 /** What the long job in hand is doing, shown at the bottom of the page; null when idle. */
 let working = null;
 
@@ -29,6 +33,13 @@ export function init(el, onOpen) {
   root = el;
   openBook = onOpen;
   filter = store.prefs().shelf || ALL;
+  // Left open overnight, the page still said yesterday: it is drawn again when the day has changed.
+  const stale = () => {
+    if (!root.hidden && shownDay && shownDay !== new Date().toDateString() && !dialogOpen()) build();
+  };
+  window.addEventListener("focus", stale);
+  document.addEventListener("visibilitychange", stale);
+  setInterval(stale, 60000);
   // Books can be dropped onto the window from Explorer.
   window.addEventListener("dragover", (e) => {
     if (e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files")) e.preventDefault();
@@ -90,6 +101,7 @@ function applyColours() {
 
 export function build() {
   const keep = root.scrollTop;
+  shownDay = new Date().toDateString();
   applyColours();
   clear(root);
   const p = store.prefs();
@@ -169,6 +181,7 @@ function header() {
       h("div", { class: "caps", text: date }),
       h("h1", { text: "MyBookSpace" }),
       h("a", { class: "by", href: "https://github.com/RutuK2005", target: "_blank", text: "by Rutuparn K   ·   github.com/RutuK2005" })),
+    window.desktop ? h("button", { class: "link", text: "⛶  Full screen", title: "Full screen (F11)", onclick: () => window.desktop.toggleFullscreen() }) : null,
     h("button", { class: "pill accent big", text: "+  Add books", title: "Add books (Ctrl+O)", onclick: pick }));
 }
 
@@ -279,8 +292,9 @@ function chips(all) {
   let reading = 0, done = 0;
   const counts = {};
   for (const b of all) {
-    if (store.finished(b)) done++;
-    else if (store.started(b)) reading++;
+    const v = lead(b);
+    if (store.finished(v)) done++;
+    else if (store.started(v)) reading++;
     if (b.shelf) counts[b.shelf] = (counts[b.shelf] || 0) + 1;
   }
   const row = h("div", { class: "chips" });
@@ -309,7 +323,7 @@ function chip(name, count, key, custom) {
     ondragstart: (e) => {
       dragging = { tab: key };
       e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", name);
+      e.dataTransfer.setData(DRAG_TYPE, name);
     },
     ondragend: () => (dragging = null),
     ondragover: (e) => {
@@ -382,10 +396,20 @@ async function shelfPicker(b) {
 
 // ---------------------------------------------------------------- books
 
+/**
+ * The version of a book that speaks for it on the shelf: of a book with two versions, the one
+ * read most recently, so reading the tucked-away version still shows as progress.
+ */
+function lead(b) {
+  const other = b.partner ? store.find(b.partner) : null;
+  return other && other.opened > b.opened ? other : b;
+}
+
 function matches(b) {
   if (filter === ALL) return true;
-  if (filter === READING) return store.started(b) && !store.finished(b);
-  if (filter === FINISHED) return store.finished(b);
+  const v = lead(b);
+  if (filter === READING) return store.started(v) && !store.finished(v);
+  if (filter === FINISHED) return store.finished(v);
   return filter === b.shelf;
 }
 
@@ -396,10 +420,21 @@ function filterTitle() {
 function gridItem(b, coversOnly) {
   const img = h("img", { class: "cover", alt: b.title, draggable: false });
   coverUrl(b).then((u) => (img.src = u));
-  const pct = store.percent(b);
-  const sub = store.finished(b) ? "Finished" : store.started(b) ? `${pct}%  ·  page ${b.page + 1} of ${b.pages}` : `${b.pages} pages`;
-  const item = h("div", { class: "book", draggable: true, title: coversOnly ? b.title : "",
+  const v = lead(b), pct = store.percent(v);
+  const sub = store.finished(v) ? "Finished" : store.started(v) ? `${pct}%  ·  page ${v.page + 1} of ${v.pages}` : `${v.pages} pages`;
+  const item = h("div", { class: "book", draggable: true, title: coversOnly ? b.title : "", tabIndex: 0, role: "button",
     onclick: () => chooseVersion(b),
+    // Reachable without the mouse: Enter opens the book, the Menu key (or Shift+F10) its menu.
+    onkeydown: (e) => {
+      if (e.target !== item) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        chooseVersion(b);
+      } else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+        e.preventDefault();
+        bookMenu(b);
+      }
+    },
     oncontextmenu: (e) => {
       e.preventDefault();
       bookMenu(b);
@@ -409,7 +444,7 @@ function gridItem(b, coversOnly) {
     ondragstart: (e) => {
       dragging = { book: b };
       e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", b.title);
+      e.dataTransfer.setData(DRAG_TYPE, b.title);
       item.classList.add("lifted");
     },
     ondragend: () => {
@@ -432,7 +467,7 @@ function gridItem(b, coversOnly) {
     h("div", { class: "slot" }, img, b.partner ? h("span", { class: "badge", text: "2 versions" }) : null),
     coversOnly ? null : h("div", { class: "book-name", text: b.title }),
     coversOnly ? null : h("div", { class: "dim small-text", text: sub }),
-    coversOnly || !store.started(b) || store.finished(b) ? null : h("div", { class: "progress thin" }, h("i", { style: { width: pct + "%" } })));
+    coversOnly || !store.started(v) || store.finished(v) ? null : h("div", { class: "progress thin" }, h("i", { style: { width: pct + "%" } })));
   return item;
 }
 
@@ -600,7 +635,8 @@ async function chooseExport() {
     const a = h("a", { href: URL.createObjectURL(blob), download: `MyBookSpace-library-${stamp}.mbs` });
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-    toast(`${count} ${count === 1 ? "book" : "books"} put in the file. Open it in MyBookSpace on the other device.`, 6000);
+    const n = Math.min(count, chosen.length);
+    toast(`The library file with ${n} ${n === 1 ? "book" : "books"} is ready. Save it, then open it in MyBookSpace on the other device.`, 7000);
   } catch (e) {
     console.error(e);
     toast(e.message || "The file couldn't be written", 6000);
@@ -638,7 +674,7 @@ export async function addFiles(files) {
   build();
   // New books land on the shelf being looked at, if it is one of the reader's own.
   const shelf = filter.startsWith("#") ? "" : filter;
-  let error = null, last = null;
+  let error = null, last = null, already = null, alreadyCount = 0;
   for (const f of files) {
     try {
       // A library file from another device brings its books in with everything done in them.
@@ -648,16 +684,23 @@ export async function addFiles(files) {
         continue;
       }
       const b = await store.importFile(f);
-      if (shelf && !b.shelf) b.shelf = shelf;
+      if (store.lastImport.existed) {
+        // Saying nothing made "Add books" look broken when the book was already here.
+        already = b;
+        alreadyCount++;
+      } else if (shelf && !b.shelf) b.shelf = shelf;
       last = b;
     } catch (e) {
       console.error(e);
-      error = e.message || "One file couldn't be opened";
+      const name = f.name ? `“${f.name}” ` : "That file ";
+      error = /^isn't a book/.test(e.message || "") ? name + e.message : e.message || name + "couldn't be opened";
     }
   }
   await store.save();
   importing--;
   build();
-  if (error) toast(error, 5000);
+  if (error) toast(error, 6000);
+  else if (alreadyCount === 1) toast(`“${already.title}” is already in your library`, 4500);
+  else if (alreadyCount > 1) toast(`${alreadyCount} of those books are already in your library`, 4500);
   return last;
 }

@@ -17,14 +17,20 @@ async function openBook(b) {
   await reader.open(b);
 }
 
-/** Books the app was started with, or handed later, from Explorer's "Open with". */
-async function takeOpenFiles() {
+/**
+ * Books the app was started with, or handed later, from Explorer's "Open with". Several can
+ * arrive at once (one launch per file); they are taken one after another, and the last one opens.
+ */
+let opening = Promise.resolve();
+function takeOpenFiles() {
   if (!window.desktop) return;
-  const files = await window.desktop.takeOpenFiles();
-  if (!files.length) return;
-  if (reader.isOpen()) reader.close();
-  const last = await home.addFiles(files);
-  if (last) openBook(last);
+  opening = opening.then(async () => {
+    const files = await window.desktop.takeOpenFiles();
+    if (!files.length) return;
+    if (reader.isOpen()) reader.close();
+    const last = await home.addFiles(files);
+    if (last) await openBook(last);
+  }).catch((e) => console.error(e));
 }
 
 async function start() {
@@ -35,6 +41,7 @@ async function start() {
     homeEl.textContent = "MyBookSpace couldn't open its library on this computer.";
     return;
   }
+  store.whenSaveFails(() => toast("MyBookSpace couldn't save your library. The disk may be full: free some space, or your place in this book may be lost.", 12000));
   home.init(homeEl, openBook);
   reader.init(readerEl, showHome);
   showHome();

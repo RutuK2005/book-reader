@@ -7,9 +7,9 @@ mouse, a keyboard and a wide window.
 
 Download one of these from the [Releases](../../../releases) page:
 
-- `MyBookSpace-Setup-1.1.0.exe` installs it with a Start menu shortcut and adds MyBookSpace to
+- `MyBookSpace-Setup-1.1.1.exe` installs it with a Start menu shortcut and adds MyBookSpace to
   "Open with" for PDF and EPUB files.
-- `MyBookSpace-Portable-1.1.0.exe` runs without installing.
+- `MyBookSpace-Portable-1.1.1.exe` runs without installing.
 
 Windows may show a "Windows protected your PC" notice because the app is not code-signed; choose
 **More info**, then **Run anyway**. Needs Windows 10 or 11 (64-bit).
@@ -86,7 +86,7 @@ Needs Node.js 20 or newer.
 cd pc
 npm install          # also copies pdf.js into app/vendor
 npm start            # run the app
-npm run dist         # build dist\MyBookSpace-Setup-1.1.0.exe and the portable exe
+npm run dist         # build dist\MyBookSpace-Setup-1.1.1.exe and the portable exe
 ```
 
 If `npm run dist` stops with "Cannot create symbolic link" while unpacking `winCodeSign`, either
