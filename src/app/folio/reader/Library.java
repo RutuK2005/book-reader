@@ -622,6 +622,27 @@ final class Library {
         if (have.shelf.isEmpty()) have.shelf = from.shelf;
     }
 
+    /** The picked file's name and size, so a message about the wrong file says which file it was. */
+    private String picked(Uri uri) {
+        String name = null;
+        long size = -1;
+        if ("content".equals(uri.getScheme())) {
+            try (Cursor c = ctx.getContentResolver().query(uri, null, null, null, null)) {
+                if (c != null && c.moveToFirst()) {
+                    int i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (i >= 0 && !c.isNull(i)) name = c.getString(i);
+                    i = c.getColumnIndex(OpenableColumns.SIZE);
+                    if (i >= 0 && !c.isNull(i)) size = c.getLong(i);
+                }
+            } catch (Exception ignored) {
+                // Some providers reject the query; the message then does without the name.
+            }
+        }
+        if (name == null || name.isEmpty()) return "That file";
+        String s = size < 0 ? "" : size < 1024 * 1024 ? " (" + Math.max(size > 0 ? 1 : 0, size / 1024) + " KB)" : " (" + size / (1024 * 1024) + " MB)";
+        return "“" + name + "”" + s;
+    }
+
     /**
      * Adds the books of a library file to this library, with their places, bookmarks, notes,
      * highlights, covers and shelves. Books already here are not copied again; they are brought
@@ -637,9 +658,9 @@ final class Library {
         boolean done = false;
         try (InputStream in = ctx.getContentResolver().openInputStream(uri)) {
             if (in == null) throw new IOException("Can't read that file");
-            ZipInputStream zip = new ZipInputStream(new java.io.BufferedInputStream(in, 1 << 16));
-            ZipEntry e = zip.getNextEntry();
-            if (e == null || !TRANSFER_NAME.equals(e.getName())) throw new IOException("That file isn't a MyBookSpace library");
+            // Leaves the manifest as the entry about to be read.
+            ZipInputStream zip = TransferFile.open(in);
+            ZipEntry e;
             java.io.ByteArrayOutputStream text = new java.io.ByteArrayOutputStream();
             copy(zip, text);
             root = new JSONObject(new String(text.toByteArray(), StandardCharsets.UTF_8));
@@ -747,6 +768,13 @@ final class Library {
                 save();
             }
             done = true;
+        } catch (TransferFile.Empty empty) {
+            throw new IOException(picked(uri) + " is empty. It was sent before the other device finished writing it. "
+                    + "Export again, wait for the “saved to the file” message, then send it again.");
+        } catch (TransferFile.NotLibrary other) {
+            throw new IOException(picked(uri) + " isn't a MyBookSpace library. Choose the file ending in .mbs, sent as it is.");
+        } catch (java.io.EOFException | java.util.zip.ZipException cut) {
+            throw new IOException(picked(uri) + " is incomplete: part of it was lost on the way here. Send it again.");
         } finally {
             if (!done) {
                 for (Book b : order) {
